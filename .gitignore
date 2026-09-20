@@ -1,0 +1,21 @@
+# 编译输出
+out/
+build/
+server
+*.o
+*.a
+*.so
+*.d
+*.ninja
+
+# 第三方依赖 (如果 third_party 不是你写的代码，强烈建议排除)
+third_party/
+
+# 环境与密钥
+.env
+*.pem
+*.key
+
+# 日志与临时文件
+*.log
+logs/

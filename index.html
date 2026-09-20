@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>影音视界 · 房间视频通话</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+            font-family: 'Segoe UI', system-ui;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 24px;
+        }
+        .call-container {
+            max-width: 1200px;
+            width: 100%;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(12px);
+            border-radius: 2.5rem;
+            padding: 1.8rem;
+            box-shadow: 0 25px 45px rgba(0,0,0,0.4);
+        }
+        h1 { text-align: center; font-weight: 600; margin-bottom: 1.5rem; color: #e2e8f0; }
+        .room-bar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .room-bar input {
+            padding: 0.7rem 1.2rem;
+            border-radius: 2rem;
+            border: none;
+            font-size: 1rem;
+            background: #334155;
+            color: white;
+            outline: none;
+            width: 200px;
+        }
+        .btn {
+            background: rgba(30,41,59,0.8);
+            border: none;
+            padding: 0.7rem 1.6rem;
+            border-radius: 3rem;
+            font-size: 1rem;
+            font-weight: 500;
+            color: #f1f5f9;
+            cursor: pointer;
+            transition: 0.2s;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        }
+        .btn-primary { background: #3b82f6; }
+        .btn-primary:hover:not(:disabled) { background: #2563eb; transform: translateY(-1px); }
+        .btn-danger { background: #dc2626; }
+        .btn-warning { background: #f59e0b; color: #0f172a; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .video-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; justify-content: center; margin-bottom: 1.8rem; }
+        .video-card { flex: 1; min-width: 280px; background: #0f172a; border-radius: 1.5rem; overflow: hidden; }
+        .video-wrapper { position: relative; background: #000; aspect-ratio: 16 / 9; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .video-label { position: absolute; background: rgba(0,0,0,0.6); padding: 4px 12px; border-radius: 20px; margin: 12px; font-size: 0.8rem; }
+        .status-area { text-align: center; margin-top: 1rem; }
+        .status-badge { display: inline-block; background: rgba(0,0,0,0.5); padding: 6px 18px; border-radius: 40px; font-size: 0.85rem; color: #a5f3c3; }
+        .ice-info { font-size: 0.7rem; margin-top: 10px; color: #94a3b8; }
+        .room-info { margin: 0.5rem 0; font-size: 0.9rem; background: #1e293b; padding: 8px; border-radius: 2rem; text-align: center; }
+    </style>
+</head>
+<body>
+<div class="call-container">
+    <h1>影音视界 · 房间模式</h1>
+    <div class="room-bar">
+        <button class="btn btn-primary" id="createBtn">创建房间</button>
+        <input type="text" id="roomIdInput" placeholder="输入房间号" />
+        <button class="btn btn-primary" id="joinBtn">加入房间</button>
+    </div>
+    <div id="roomStatus" class="room-info">未加入房间</div>
+    <div class="video-grid">
+        <div class="video-card"><div class="video-wrapper"><div class="video-label">本地</div><video id="localVideo" autoplay muted playsinline></video></div></div>
+        <div class="video-card"><div class="video-wrapper"><div class="video-label">对方</div><video id="remoteVideo" autoplay playsinline></video></div></div>
+    </div>
+    <div class="button-bar" style="display: flex; justify-content: center; gap: 1rem;">
+        <button class="btn btn-warning" id="muteBtn" disabled>闭麦</button>
+        <button class="btn btn-danger" id="hangupBtn" disabled>挂断</button>
+    </div>
+    <div class="status-area">
+        <div class="status-badge" id="status">等待操作</div>
+        <div class="ice-info" id="iceStatus">ICE 状态: 未连接</div>
+    </div>
+</div>
+
+<script>
+    let localStream = null;
+    let peerConn = null;
+    let ws = null;
+    let inCall = false;
+    let currentRoomId = null;
+    let audioMuted = false;
+    let isInitiator = false;
+    let audioSender = null;
+    let wsDisconnectedIntentionally = false;
+    let byeSent = false;
+    let wsReconnectAttempts = 0;
+    let iceRestartTimer = null;
+    const WS_MAX_RECONNECT = 10;
+    const WS_RECONNECT_BASE = 1000;
+
+    // 默认 ICE 配置（当服务器未下发时使用）
+    let ICE_CONFIG = {
+        iceServers: [
+            { urls: "stun:stun.qq.com:3478" },
+            { urls: "stun:stun.miwifi.com:3478" }
+        ]
+    };
+
+    function updateStatus(msg, isError = false) {
+        const el = document.getElementById('status');
+        el.textContent = msg;
+        el.style.color = isError ? "#f87171" : "#a5f3c3";
+    }
+
+    function generateRoomId() {
+        const array = new Uint32Array(4);
+        crypto.getRandomValues(array);
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let id = '';
+        for (let i = 0; i < 6; i++) {
+            id += chars[array[i] % chars.length];
+        }
+        return id;
+    }
+
+    function initPeerConnection() {
+        if (peerConn) {
+            peerConn.close();
+            peerConn = null;
+        }
+        audioSender = null;
+        audioMuted = false;
+        peerConn = new RTCPeerConnection(ICE_CONFIG);
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                const sender = peerConn.addTrack(track, localStream);
+                if (track.kind === 'audio') {
+                    audioSender = sender;
+                }
+            });
+        }
+        peerConn.ontrack = (event) => {
+            document.getElementById('remoteVideo').srcObject = event.streams[0];
+            updateStatus("通话中");
+        };
+        peerConn.onicecandidate = (event) => {
+            if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "ice", data: event.candidate }));
+            }
+        };
+        peerConn.oniceconnectionstatechange = () => {
+            const state = peerConn ? peerConn.iceConnectionState : 'closed';
+            document.getElementById('iceStatus').textContent = `ICE 状态: ${state}`;
+            if (state === 'connected' || state === 'completed') {
+                updateStatus("通话中");
+                document.title = "通话中 - 影音视界";
+                if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+            } else if (state === 'disconnected') {
+                updateStatus("连接不稳定...", true);
+                if (!iceRestartTimer) {
+                    iceRestartTimer = setTimeout(() => {
+                        if (peerConn && peerConn.iceConnectionState === 'disconnected') {
+                            attemptIceRestart();
+                        }
+                    }, 5000);
+                }
+            } else if (state === 'failed') {
+                updateStatus("ICE 连接失败，尝试重启...", true);
+                attemptIceRestart();
+            }
+        };
+        return peerConn;
+    }
+
+    async function attemptIceRestart() {
+        if (!peerConn || !inCall || !ws || ws.readyState !== WebSocket.OPEN) return;
+        iceRestartTimer = null;
+        try {
+            const offer = await peerConn.createOffer({ iceRestart: true });
+            await peerConn.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
+            updateStatus("正在重新连接...");
+        } catch(e) {
+            updateStatus("ICE 重启失败，请尝试重新加入房间", true);
+        }
+    }
+
+    function hangup(isActive = true) {
+        if (!inCall && !peerConn) return;
+        const wasInCall = inCall;
+        inCall = false;
+        isInitiator = false;
+        if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+
+        if (peerConn) {
+            peerConn.close();
+            peerConn = null;
+        }
+        audioSender = null;
+        document.getElementById('remoteVideo').srcObject = null;
+        document.getElementById('hangupBtn').disabled = true;
+        document.getElementById('muteBtn').disabled = true;
+        document.title = "影音视界 · 房间视频通话";
+
+        if (isActive && wasInCall && !byeSent) {
+            if (currentRoomId && ws && ws.readyState === WebSocket.OPEN) {
+                byeSent = true;
+                ws.send(JSON.stringify({ type: "bye" }));
+                updateStatus("已挂断，保持房间连接...");
+            } else {
+                updateStatus("已挂断");
+            }
+        } else {
+            updateStatus("已挂断");
+        }
+    }
+
+    async function startCallAsInitiator() {
+        if (!peerConn) initPeerConnection();
+        try {
+            const offer = await peerConn.createOffer();
+            await peerConn.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
+            inCall = true;
+            isInitiator = true;
+            document.getElementById('hangupBtn').disabled = false;
+            updateStatus("发起通话中...");
+        } catch(e) {
+            updateStatus("创建offer失败: " + e.message, true);
+        }
+    }
+
+    async function handleSignaling(event) {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch(e) {
+            console.error("JSON parse error", event.data);
+            return;
+        }
+
+        if (data.type === "start_call") {
+            // 使用服务器下发的 ICE 配置（如果有的话）
+            if (data.iceServers && Array.isArray(data.iceServers)) {
+                ICE_CONFIG.iceServers = data.iceServers;
+                console.log("使用服务器下发的 ICE 配置:", data.iceServers);
+            }
+            if (data.initiator === true) {
+                await startCallAsInitiator();
+            } else {
+                inCall = true;
+                isInitiator = false;
+                document.getElementById('hangupBtn').disabled = false;
+                document.getElementById('muteBtn').disabled = false;
+                updateStatus("等待对方连接...");
+                if (!peerConn) initPeerConnection();
+            }
+            return;
+        }
+
+        if (data.type === "offer") {
+            if (!peerConn) initPeerConnection();
+            await peerConn.setRemoteDescription(data.data);
+            const answer = await peerConn.createAnswer();
+            await peerConn.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: "answer", data: answer }));
+            inCall = true;
+            document.getElementById('hangupBtn').disabled = false;
+            document.getElementById('muteBtn').disabled = false;
+            updateStatus("通话中");
+        } else if (data.type === "answer") {
+            if (!peerConn) initPeerConnection();
+            await peerConn.setRemoteDescription(data.data);
+            inCall = true;
+            document.getElementById('hangupBtn').disabled = false;
+            document.getElementById('muteBtn').disabled = false;
+            updateStatus("通话中");
+        } else if (data.type === "ice") {
+            if (peerConn) {
+                try {
+                    await peerConn.addIceCandidate(data.data);
+                } catch(e) { console.warn("ICE candidate error", e); }
+            }
+        } else if (data.type === "bye") {
+            const wasInCall = inCall;
+            byeSent = true;
+            hangup(false);
+            document.getElementById('hangupBtn').disabled = true;
+            document.getElementById('muteBtn').disabled = false;
+            updateStatus("对方已挂断，继续等待新连接...");
+            if (currentRoomId) {
+                console.log("房间仍然保持，可等待新用户加入或点击挂断离开房间");
+            }
+        } else if (data.type === "bye_ack") {
+            console.log("对方已确认挂断");
+        } else if (data.type === "error") {
+            updateStatus("错误: " + data.message, true);
+        }
+    }
+
+    function connectWebSocket() {
+        return new Promise((resolve, reject) => {
+            const protocol = location.protocol === "https:" ? "wss" : "ws";
+            const wsUrl = `${protocol}://${location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                wsDisconnectedIntentionally = false;
+                wsReconnectAttempts = 0;
+                console.log("WebSocket 已连接");
+                // 如果之前在房间中，重新加入
+                if (currentRoomId && !byeSent) {
+                    ws.send(JSON.stringify({ type: "join_room", roomId: currentRoomId }));
+                    updateStatus("已重新加入房间");
+                }
+                resolve();
+            };
+
+            ws.onerror = () => {
+                if (wsReconnectAttempts === 0) {
+                    updateStatus("WebSocket 连接失败", true);
+                }
+                reject();
+            };
+
+            ws.onmessage = handleSignaling;
+
+            ws.onclose = () => {
+                if (!wsDisconnectedIntentionally && wsReconnectAttempts < WS_MAX_RECONNECT) {
+                    const delay = Math.min(WS_RECONNECT_BASE * Math.pow(2, wsReconnectAttempts), 30000);
+                    wsReconnectAttempts++;
+                    updateStatus(`正在重新连接... (${wsReconnectAttempts}/${WS_MAX_RECONNECT})`, true);
+                    setTimeout(() => {
+                        connectWebSocket().catch(() => {});
+                    }, delay);
+                } else if (!wsDisconnectedIntentionally) {
+                    updateStatus("连接已断开，请刷新页面", true);
+                }
+                // 非主动断开且在通话中
+                if (!wsDisconnectedIntentionally && inCall) {
+                    updateStatus("网络连接已断开", true);
+                    hangup();
+                }
+            };
+        });
+    }
+
+    async function joinRoom(roomId) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            try {
+                await connectWebSocket();
+            } catch (e) {
+                updateStatus("连接服务器失败，请检查网络", true);
+                return;
+            }
+        }
+        try {
+            byeSent = false;
+            ws.send(JSON.stringify({ type: "join_room", roomId: roomId }));
+            currentRoomId = roomId;
+            document.getElementById('roomStatus').innerHTML = `当前房间: ${roomId}`;
+            document.getElementById('muteBtn').disabled = false;
+            updateStatus("已加入房间，等待对方...");
+        } catch (e) {
+            updateStatus("加入房间失败: " + e.message, true);
+        }
+    }
+
+    async function createRoom() {
+        const roomId = generateRoomId();
+        await joinRoom(roomId);
+        // 复制房间号到剪贴板
+        try {
+            await navigator.clipboard.writeText(roomId);
+            alert(`房间号: ${roomId}\n已复制到剪贴板，请发送给朋友`);
+        } catch(e) {
+            alert(`房间号: ${roomId}\n请复制发送给朋友`);
+        }
+    }
+
+    async function initCamera() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            document.getElementById('localVideo').srcObject = localStream;
+            document.getElementById('muteBtn').disabled = false;
+            updateStatus("摄像头已开启，可创建或加入房间");
+        } catch(e) {
+            if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+                updateStatus("请允许摄像头和麦克风权限后刷新页面", true);
+            } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+                updateStatus("未检测到摄像头或麦克风设备", true);
+            } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+                updateStatus("摄像头或麦克风被其他应用占用", true);
+            } else {
+                updateStatus("摄像头启动失败: " + e.message, true);
+            }
+        }
+    }
+
+    function toggleMute() {
+        if (!localStream) return;
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length === 0) return;
+
+        audioMuted = !audioMuted;
+        audioTracks.forEach(track => track.enabled = !audioMuted);
+
+        if (inCall && audioSender) {
+            const params = audioSender.getParameters();
+            if (!params.encodings) params.encodings = [{}];
+            params.encodings.forEach(encoding => {
+                encoding.active = !audioMuted;
+            });
+            audioSender.setParameters(params).catch(e => console.error("设置发送器参数失败:", e));
+        }
+
+        const muteBtn = document.getElementById('muteBtn');
+        muteBtn.innerHTML = audioMuted ? "开麦" : "闭麦";
+    }
+
+    window.onload = async () => {
+        await connectWebSocket().catch(() => updateStatus("WebSocket 连接失败", true));
+        await initCamera();
+    };
+
+    document.getElementById('createBtn').onclick = createRoom;
+    document.getElementById('joinBtn').onclick = () => {
+        const roomId = document.getElementById('roomIdInput').value.trim().toUpperCase();
+        if (roomId) joinRoom(roomId);
+        else alert("请输入房间号");
+    };
+    document.getElementById('hangupBtn').onclick = () => hangup(true);
+    document.getElementById('muteBtn').onclick = toggleMute;
+</script>
+</body>
+</html>

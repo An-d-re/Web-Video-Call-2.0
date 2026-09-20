@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>影音视界 · 房间视频通话</title>
+    <style>
+        :root {
+            --bg: #09090b;
+            --surface: #18181b;
+            --surface-raised: #1f1f23;
+            --surface-hover: #27272a;
+            --orange: #f97316;
+            --orange-hover: #ea580c;
+            --orange-soft: rgba(249, 115, 22, 0.10);
+            --orange-glow: rgba(249, 115, 22, 0.20);
+            --text: #f4f4f5;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --border: #27272a;
+            --danger: #ef4444;
+            --danger-hover: #dc2626;
+            --radius-sm: 0.75rem;
+            --radius: 1rem;
+            --radius-lg: 1.5rem;
+            --radius-xl: 2rem;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            min-height: 100vh;
+            background: var(--bg);
+            font-family: 'SF Pro Display', 'Segoe UI', system-ui, -apple-system, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 28px;
+            color: var(--text);
+            -webkit-font-smoothing: antialiased;
+            background-image: radial-gradient(ellipse at 50% 0%, rgba(249, 115, 22, 0.04) 0%, transparent 60%),
+                              radial-gradient(ellipse at 80% 100%, rgba(249, 115, 22, 0.03) 0%, transparent 50%);
+        }
+
+        .call-container {
+            max-width: 1100px;
+            width: 100%;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            padding: 2rem 2rem 1.6rem;
+            box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.04),
+                        0 30px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        /* ===== Header ===== */
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.6rem;
+            margin-bottom: 1.6rem;
+        }
+        .header .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--orange);
+            box-shadow: 0 0 8px var(--orange-glow);
+            animation: pulse-dot 2s ease-in-out infinite;
+        }
+        .header .dot:nth-child(2) { animation-delay: 0.3s; }
+        .header .dot:nth-child(3) { animation-delay: 0.6s; }
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.7); }
+        }
+        .header h1 {
+            font-size: 1.15rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            color: var(--text);
+            margin: 0 0.4rem;
+        }
+        .header h1 span { color: var(--orange); }
+
+        /* ===== Room Bar ===== */
+        .room-bar {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 0.7rem;
+            margin-bottom: 0.8rem;
+        }
+        .room-bar input {
+            padding: 0.65rem 1.1rem;
+            border-radius: var(--radius-xl);
+            border: 1px solid var(--border);
+            font-size: 0.9rem;
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            width: 180px;
+            letter-spacing: 0.08em;
+            font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+            text-transform: uppercase;
+            transition: border-color 0.2s;
+        }
+        .room-bar input:focus {
+            border-color: var(--orange);
+            box-shadow: 0 0 0 3px var(--orange-soft);
+        }
+        .room-bar input::placeholder {
+            color: var(--text-muted);
+            letter-spacing: 0;
+            text-transform: none;
+            font-family: 'SF Pro Display', 'Segoe UI', system-ui, sans-serif;
+        }
+
+        .btn {
+            border: 1px solid var(--border);
+            padding: 0.65rem 1.3rem;
+            border-radius: var(--radius-xl);
+            font-size: 0.88rem;
+            font-weight: 500;
+            color: var(--text);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            background: var(--surface-raised);
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            white-space: nowrap;
+            user-select: none;
+        }
+        .btn:hover:not(:disabled) {
+            background: var(--surface-hover);
+            transform: translateY(-1px);
+        }
+        .btn:active:not(:disabled) { transform: translateY(0); }
+        .btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+
+        .btn-primary {
+            background: var(--orange);
+            border-color: var(--orange);
+            color: #fff;
+            font-weight: 600;
+        }
+        .btn-primary:hover:not(:disabled) {
+            background: var(--orange-hover);
+            border-color: var(--orange-hover);
+            box-shadow: 0 4px 14px var(--orange-glow);
+        }
+
+        /* ===== Room Info ===== */
+        .room-info {
+            text-align: center;
+            margin-bottom: 1.2rem;
+            font-size: 0.82rem;
+            color: var(--text-secondary);
+            background: var(--bg);
+            padding: 0.5rem 1.2rem;
+            border-radius: var(--radius-xl);
+            display: inline-block;
+            width: 100%;
+            letter-spacing: 0.03em;
+            border: 1px solid var(--border);
+        }
+        .room-info .room-id {
+            font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+            color: var(--orange);
+            font-weight: 600;
+            letter-spacing: 0.1em;
+        }
+
+        /* ===== Video Grid ===== */
+        .video-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            justify-content: center;
+            margin-bottom: 1.4rem;
+        }
+        .video-card {
+            flex: 1;
+            min-width: 280px;
+            max-width: 520px;
+            background: var(--bg);
+            border-radius: var(--radius-lg);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            transition: border-color 0.3s;
+        }
+        .video-card.connected { border-color: rgba(249, 115, 22, 0.3); }
+
+        .video-wrapper {
+            position: relative;
+            background: #000;
+            aspect-ratio: 16 / 9;
+            overflow: hidden;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+        #localVideo { transform: scaleX(-1); }
+        .video-label {
+            position: absolute;
+            bottom: 12px;
+            left: 12px;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(6px);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: #d4d4d8;
+            z-index: 2;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        /* ===== Video Overlay ===== */
+        .video-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(24, 24, 27, 0.94);
+            backdrop-filter: blur(4px);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.35s ease;
+            z-index: 3;
+        }
+        .video-overlay.active { opacity: 1; }
+        .video-overlay svg {
+            width: 56px;
+            height: 56px;
+            stroke: var(--text-muted);
+            opacity: 0.45;
+            margin-bottom: 10px;
+        }
+        .video-overlay span {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        /* ===== Idle Overlay ===== */
+        .idle-hint {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            z-index: 1;
+            pointer-events: none;
+            background: radial-gradient(ellipse at center, rgba(24,24,27,0.6) 0%, transparent 70%);
+        }
+
+        /* ===== Button Bar ===== */
+        .button-bar {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.65rem;
+            margin-bottom: 1rem;
+        }
+        .button-row {
+            display: flex;
+            justify-content: center;
+            gap: 0.8rem;
+        }
+
+        .btn-control {
+            width: 150px;
+            justify-content: center;
+            padding: 0.7rem 1rem;
+            border-radius: var(--radius);
+            font-weight: 500;
+            gap: 0.5rem;
+        }
+        .btn-control svg { width: 18px; height: 18px; flex-shrink: 0; }
+
+        .btn-control.on {
+            background: var(--surface-raised);
+            border-color: var(--border);
+            color: var(--text);
+        }
+        .btn-control.on svg { stroke: var(--orange); }
+        .btn-control.on:hover:not(:disabled) { border-color: var(--orange); }
+
+        .btn-control.off {
+            background: var(--orange);
+            border-color: var(--orange);
+            color: #fff;
+        }
+        .btn-control.off svg { stroke: #fff; }
+        .btn-control.off:hover:not(:disabled) {
+            background: #fb923c;
+        }
+
+        .btn-hangup {
+            padding: 0.7rem 2.5rem;
+            border-radius: var(--radius);
+            background: var(--danger);
+            border: 1px solid var(--danger);
+            color: #fff;
+            font-weight: 600;
+            font-size: 0.9rem;
+            justify-content: center;
+        }
+        .btn-hangup:hover:not(:disabled) {
+            background: var(--danger-hover);
+            border-color: var(--danger-hover);
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.3);
+            transform: translateY(-1px);
+        }
+
+        /* ===== Status Area ===== */
+        .status-area { text-align: center; }
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            background: var(--bg);
+            padding: 6px 20px;
+            border-radius: 40px;
+            font-size: 0.82rem;
+            color: #a3e635;
+            border: 1px solid var(--border);
+        }
+        .status-badge::before {
+            content: '';
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: #a3e635;
+            flex-shrink: 0;
+        }
+        .status-badge.error { color: #fca5a5; }
+        .status-badge.error::before { background: #fca5a5; }
+        .ice-info {
+            font-size: 0.7rem;
+            margin-top: 8px;
+            color: var(--text-muted);
+            letter-spacing: 0.02em;
+        }
+
+        /* ===== Responsive ===== */
+        @media (max-width: 700px) {
+            body { padding: 12px; }
+            .call-container { padding: 1.2rem 0.8rem 1rem; border-radius: var(--radius-lg); }
+            .video-card { min-width: 100%; }
+            .header h1 { font-size: 1rem; }
+            .btn-control { width: 130px; font-size: 0.8rem; padding: 0.6rem 0.8rem; }
+            .room-bar input { width: 140px; }
+        }
+    </style>
+</head>
+<body>
+<div class="call-container">
+
+    <!-- Header -->
+    <div class="header">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <h1>影音<span>视界</span></h1>
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>
+
+    <!-- Room Bar -->
+    <div class="room-bar">
+        <button class="btn btn-primary" id="createBtn">创建房间</button>
+        <input type="text" id="roomIdInput" placeholder="输入房间号" maxlength="6" autocomplete="off" />
+        <button class="btn btn-primary" id="joinBtn">加入房间</button>
+    </div>
+
+    <!-- Room Info -->
+    <div class="room-info" id="roomStatus">未加入房间</div>
+
+    <!-- Video Grid -->
+    <div class="video-grid">
+        <div class="video-card" id="localCard">
+            <div class="video-wrapper">
+                <video id="localVideo" autoplay muted playsinline></video>
+                <div class="video-overlay" id="localOverlay">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="8" r="4"/>
+                        <path d="M5 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>
+                    </svg>
+                    <span>摄像头已关闭</span>
+                </div>
+                <div class="idle-hint" id="localIdleHint">等待摄像头...</div>
+                <div class="video-label">本地</div>
+            </div>
+        </div>
+
+        <div class="video-card" id="remoteCard">
+            <div class="video-wrapper">
+                <video id="remoteVideo" autoplay playsinline></video>
+                <div class="video-overlay" id="remoteOverlay">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="8" r="4"/>
+                        <path d="M5 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>
+                    </svg>
+                    <span>对方已关闭摄像头</span>
+                </div>
+                <div class="idle-hint" id="remoteIdleHint">等待加入房间...</div>
+                <div class="video-label">对方</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Button Bar -->
+    <div class="button-bar">
+        <div class="button-row">
+            <button class="btn btn-control on" id="micBtn" disabled>
+                <!-- Mic On Icon -->
+                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="9" y="1" width="6" height="11" rx="3"/>
+                    <path d="M5 11a7 7 0 0 0 14 0"/>
+                    <line x1="12" y1="16" x2="12" y2="21"/>
+                    <line x1="8" y1="21" x2="16" y2="21"/>
+                </svg>
+                <!-- Mic Off Icon -->
+                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                    <path d="M9 3v5.5l5.88 5.88A3 3 0 0 0 15 8V3a3 3 0 0 0-6 0z"/>
+                    <line x1="9" y1="13" x2="9" y2="21"/>
+                    <line x1="5" y1="21" x2="19" y2="21"/>
+                    <path d="M17 12a7 7 0 0 1-1.83 4.76"/>
+                </svg>
+                <span id="micLabel">关闭麦克风</span>
+            </button>
+
+            <button class="btn btn-control on" id="videoBtn" disabled>
+                <!-- Camera On Icon -->
+                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="5" width="15" height="14" rx="3"/>
+                    <polygon points="17 9 22 7 22 17 17 15"/>
+                </svg>
+                <!-- Camera Off Icon -->
+                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                    <path d="M15 5v3.5l4.53 2.27.47.24V17l-5-2.5V12"/>
+                    <rect x="2" y="5" width="11" height="11" rx="2"/>
+                </svg>
+                <span id="videoLabel">关闭摄像头</span>
+            </button>
+        </div>
+        <div class="button-row">
+            <button class="btn btn-hangup" id="hangupBtn" disabled>挂断</button>
+        </div>
+    </div>
+
+    <!-- Status Area -->
+    <div class="status-area">
+        <div class="status-badge" id="status">等待操作</div>
+        <div class="ice-info" id="iceStatus">ICE 状态: 未连接</div>
+    </div>
+</div>
+
+<script>
+    // ========== State ==========
+    let localStream = null;
+    let peerConn = null;
+    let ws = null;
+    let inCall = false;
+    let currentRoomId = null;
+    let audioMuted = false;
+    let videoMuted = false;
+    let remoteVideoMuted = false;
+    let isInitiator = false;
+    let audioSender = null;
+    let wsDisconnectedIntentionally = false;
+    let byeSent = false;
+    let wsReconnectAttempts = 0;
+    let iceRestartTimer = null;
+    const WS_MAX_RECONNECT = 10;
+    const WS_RECONNECT_BASE = 1000;
+
+    let ICE_CONFIG = {
+        iceServers: [
+            { urls: "stun:stun.qq.com:3478" },
+            { urls: "stun:stun.miwifi.com:3478" }
+        ]
+    };
+
+    // ========== DOM refs ==========
+    const $ = (id) => document.getElementById(id);
+
+    // ========== UI helpers ==========
+    function updateStatus(msg, isError = false) {
+        const el = $('status');
+        el.textContent = msg;
+        el.className = 'status-badge' + (isError ? ' error' : '');
+    }
+
+    function updateMicUI() {
+        const btn = $('micBtn');
+        const label = $('micLabel');
+        const iconOn = btn.querySelector('.icon-on');
+        const iconOff = btn.querySelector('.icon-off');
+        if (audioMuted) {
+            btn.className = 'btn btn-control off';
+            label.textContent = '打开麦克风';
+            iconOn.style.display = 'none';
+            iconOff.style.display = 'block';
+        } else {
+            btn.className = 'btn btn-control on';
+            label.textContent = '关闭麦克风';
+            iconOn.style.display = 'block';
+            iconOff.style.display = 'none';
+        }
+    }
+
+    function updateVideoUI() {
+        const btn = $('videoBtn');
+        const label = $('videoLabel');
+        const iconOn = btn.querySelector('.icon-on');
+        const iconOff = btn.querySelector('.icon-off');
+        if (videoMuted) {
+            btn.className = 'btn btn-control off';
+            label.textContent = '打开摄像头';
+            iconOn.style.display = 'none';
+            iconOff.style.display = 'block';
+        } else {
+            btn.className = 'btn btn-control on';
+            label.textContent = '关闭摄像头';
+            iconOn.style.display = 'block';
+            iconOff.style.display = 'none';
+        }
+        // 更新本地遮罩
+        $('localOverlay').classList.toggle('active', videoMuted);
+        $('localIdleHint').style.display = videoMuted ? 'none' : '';
+    }
+
+    function updateRemoteVideoUI() {
+        $('remoteOverlay').classList.toggle('active', remoteVideoMuted);
+    }
+
+    function sendVideoMute() {
+        if (ws && ws.readyState === WebSocket.OPEN && currentRoomId && inCall) {
+            ws.send(JSON.stringify({ type: "video_mute", muted: videoMuted }));
+        }
+    }
+
+    // ========== Room ==========
+    function generateRoomId() {
+        const array = new Uint32Array(6);
+        crypto.getRandomValues(array);
+        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+        let id = '';
+        for (let i = 0; i < 6; i++) {
+            id += chars[array[i] % chars.length];
+        }
+        return id;
+    }
+
+    // ========== WebRTC ==========
+    function initPeerConnection() {
+        if (peerConn) {
+            peerConn.close();
+            peerConn = null;
+        }
+        audioSender = null;
+
+        // 同步 audio/video track 状态
+        if (localStream) {
+            localStream.getAudioTracks().forEach(track => track.enabled = !audioMuted);
+            localStream.getVideoTracks().forEach(track => track.enabled = !videoMuted);
+        }
+
+        peerConn = new RTCPeerConnection(ICE_CONFIG);
+
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                const sender = peerConn.addTrack(track, localStream);
+                if (track.kind === 'audio') {
+                    audioSender = sender;
+                }
+            });
+        }
+
+        peerConn.ontrack = (event) => {
+            $('remoteVideo').srcObject = event.streams[0];
+            $('remoteIdleHint').style.display = 'none';
+            $('remoteCard').classList.add('connected');
+            updateStatus("通话中");
+        };
+
+        peerConn.onicecandidate = (event) => {
+            if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "ice", data: event.candidate }));
+            }
+        };
+
+        peerConn.oniceconnectionstatechange = () => {
+            const state = peerConn ? peerConn.iceConnectionState : 'closed';
+            $('iceStatus').textContent = `ICE 状态: ${state}`;
+            if (state === 'connected' || state === 'completed') {
+                updateStatus("通话中");
+                document.title = "通话中 - 影音视界";
+                if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+            } else if (state === 'disconnected') {
+                updateStatus("连接不稳定...", true);
+                if (!iceRestartTimer) {
+                    iceRestartTimer = setTimeout(() => {
+                        if (peerConn && peerConn.iceConnectionState === 'disconnected') {
+                            attemptIceRestart();
+                        }
+                    }, 5000);
+                }
+            } else if (state === 'failed') {
+                updateStatus("ICE 连接失败，尝试重启...", true);
+                attemptIceRestart();
+            }
+        };
+
+        return peerConn;
+    }
+
+    async function attemptIceRestart() {
+        if (!peerConn || !inCall || !ws || ws.readyState !== WebSocket.OPEN) return;
+        iceRestartTimer = null;
+        try {
+            const offer = await peerConn.createOffer({ iceRestart: true });
+            await peerConn.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
+            updateStatus("正在重新连接...");
+        } catch(e) {
+            updateStatus("ICE 重启失败，请尝试重新加入房间", true);
+        }
+    }
+
+    async function startCallAsInitiator() {
+        if (!peerConn) initPeerConnection();
+        try {
+            const offer = await peerConn.createOffer();
+            await peerConn.setLocalDescription(offer);
+            ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
+            inCall = true;
+            isInitiator = true;
+            $('hangupBtn').disabled = false;
+            $('videoBtn').disabled = false;
+            $('localCard').classList.add('connected');
+            updateStatus("发起通话中...");
+            // 如果摄像头已关闭，通知对方
+            if (videoMuted) {
+                setTimeout(sendVideoMute, 300);
+            }
+        } catch(e) {
+            updateStatus("创建offer失败: " + e.message, true);
+        }
+    }
+
+    // ========== Signaling ==========
+    async function handleSignaling(event) {
+        let data;
+        try {
+            data = JSON.parse(event.data);
+        } catch(e) {
+            console.error("JSON parse error", event.data);
+            return;
+        }
+
+        if (data.type === "start_call") {
+            console.log("收到 start_call:", JSON.stringify(data));
+            if (data.iceServers && Array.isArray(data.iceServers)) {
+                ICE_CONFIG.iceServers = data.iceServers;
+                console.log("已更新 ICE 配置:", JSON.stringify(ICE_CONFIG.iceServers));
+            }
+            if (data.initiator === true) {
+                await startCallAsInitiator();
+            } else {
+                inCall = true;
+                isInitiator = false;
+                $('hangupBtn').disabled = false;
+                $('videoBtn').disabled = false;
+                $('micBtn').disabled = false;
+                updateStatus("等待对方连接...");
+                if (!peerConn) initPeerConnection();
+                // 如果摄像头已关闭，通知对方
+                if (videoMuted) {
+                    setTimeout(sendVideoMute, 300);
+                }
+            }
+            return;
+        }
+
+        if (data.type === "offer") {
+            if (!peerConn) initPeerConnection();
+            await peerConn.setRemoteDescription(data.data);
+            const answer = await peerConn.createAnswer();
+            await peerConn.setLocalDescription(answer);
+            ws.send(JSON.stringify({ type: "answer", data: answer }));
+            inCall = true;
+            $('hangupBtn').disabled = false;
+            $('videoBtn').disabled = false;
+            $('micBtn').disabled = false;
+            $('localCard').classList.add('connected');
+            updateStatus("通话中");
+            // 如果摄像头已关闭，通知对方
+            if (videoMuted) {
+                setTimeout(sendVideoMute, 300);
+            }
+        } else if (data.type === "answer") {
+            if (!peerConn) initPeerConnection();
+            await peerConn.setRemoteDescription(data.data);
+            inCall = true;
+            $('hangupBtn').disabled = false;
+            $('videoBtn').disabled = false;
+            $('micBtn').disabled = false;
+            updateStatus("通话中");
+            if (videoMuted) {
+                setTimeout(sendVideoMute, 300);
+            }
+        } else if (data.type === "ice") {
+            if (peerConn) {
+                try {
+                    await peerConn.addIceCandidate(data.data);
+                } catch(e) { console.warn("ICE candidate error", e); }
+            }
+        } else if (data.type === "video_mute") {
+            remoteVideoMuted = data.muted === true;
+            updateRemoteVideoUI();
+        } else if (data.type === "bye") {
+            byeSent = true;
+            hangup(false);
+            $('hangupBtn').disabled = true;
+            updateStatus("对方已挂断，继续等待新连接...");
+        } else if (data.type === "bye_ack") {
+            console.log("对方已确认挂断");
+        } else if (data.type === "error") {
+            updateStatus("错误: " + data.message, true);
+        }
+    }
+
+    // ========== Hangup ==========
+    function hangup(isActive = true) {
+        if (!inCall && !peerConn) return;
+        const wasInCall = inCall;
+        inCall = false;
+        isInitiator = false;
+        if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+
+        if (peerConn) {
+            peerConn.close();
+            peerConn = null;
+        }
+        audioSender = null;
+
+        $('remoteVideo').srcObject = null;
+        $('remoteIdleHint').style.display = '';
+        $('hangupBtn').disabled = true;
+        $('videoBtn').disabled = true;
+        $('localCard').classList.remove('connected');
+        $('remoteCard').classList.remove('connected');
+        document.title = "影音视界 · 房间视频通话";
+
+        // 重置视频静音状态
+        videoMuted = false;
+        remoteVideoMuted = false;
+        updateVideoUI();
+        updateRemoteVideoUI();
+
+        if (isActive && wasInCall && !byeSent) {
+            if (currentRoomId && ws && ws.readyState === WebSocket.OPEN) {
+                byeSent = true;
+                ws.send(JSON.stringify({ type: "bye" }));
+                updateStatus("已挂断，保持房间连接...");
+            } else {
+                updateStatus("已挂断");
+            }
+        } else {
+            updateStatus("已挂断");
+        }
+    }
+
+    // ========== Toggle Controls ==========
+    function toggleMic() {
+        if (!localStream) return;
+        const audioTracks = localStream.getAudioTracks();
+        if (audioTracks.length === 0) return;
+
+        audioMuted = !audioMuted;
+        audioTracks.forEach(track => track.enabled = !audioMuted);
+
+        if (inCall && audioSender) {
+            const params = audioSender.getParameters();
+            if (!params.encodings) params.encodings = [{}];
+            params.encodings.forEach(encoding => {
+                encoding.active = !audioMuted;
+            });
+            audioSender.setParameters(params).catch(e => console.error("设置发送器参数失败:", e));
+        }
+
+        updateMicUI();
+    }
+
+    function toggleVideo() {
+        if (!localStream) return;
+        const videoTracks = localStream.getVideoTracks();
+        if (videoTracks.length === 0) return;
+
+        videoMuted = !videoMuted;
+        videoTracks.forEach(track => track.enabled = !videoMuted);
+
+        updateVideoUI();
+        sendVideoMute();
+    }
+
+    // ========== WebSocket ==========
+    function connectWebSocket() {
+        return new Promise((resolve, reject) => {
+            const protocol = location.protocol === "https:" ? "wss" : "ws";
+            const wsUrl = `${protocol}://${location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                wsDisconnectedIntentionally = false;
+                wsReconnectAttempts = 0;
+                console.log("WebSocket 已连接");
+                if (currentRoomId && !byeSent) {
+                    ws.send(JSON.stringify({ type: "join_room", roomId: currentRoomId }));
+                    updateStatus("已重新加入房间");
+                }
+                resolve();
+            };
+
+            ws.onerror = () => {
+                if (wsReconnectAttempts === 0) {
+                    updateStatus("WebSocket 连接失败", true);
+                }
+                reject();
+            };
+
+            ws.onmessage = handleSignaling;
+
+            ws.onclose = () => {
+                if (!wsDisconnectedIntentionally && wsReconnectAttempts < WS_MAX_RECONNECT) {
+                    const delay = Math.min(WS_RECONNECT_BASE * Math.pow(2, wsReconnectAttempts), 30000);
+                    wsReconnectAttempts++;
+                    updateStatus(`正在重新连接... (${wsReconnectAttempts}/${WS_MAX_RECONNECT})`, true);
+                    setTimeout(() => {
+                        connectWebSocket().catch(() => {});
+                    }, delay);
+                } else if (!wsDisconnectedIntentionally) {
+                    updateStatus("连接已断开，请刷新页面", true);
+                }
+                if (!wsDisconnectedIntentionally && inCall) {
+                    updateStatus("网络连接已断开", true);
+                    hangup();
+                }
+            };
+        });
+    }
+
+    // ========== Room Operations ==========
+    async function joinRoom(roomId) {
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+            try {
+                await connectWebSocket();
+            } catch (e) {
+                updateStatus("连接服务器失败，请检查网络", true);
+                return;
+            }
+        }
+        try {
+            byeSent = false;
+            videoMuted = false;
+            remoteVideoMuted = false;
+            updateVideoUI();
+            updateRemoteVideoUI();
+            ws.send(JSON.stringify({ type: "join_room", roomId: roomId }));
+            currentRoomId = roomId;
+            $('roomStatus').innerHTML = `当前房间: <span class="room-id">${roomId}</span>`;
+            $('micBtn').disabled = false;
+            $('remoteIdleHint').style.display = '';
+            updateStatus("已加入房间，等待对方...");
+        } catch (e) {
+            updateStatus("加入房间失败: " + e.message, true);
+        }
+    }
+
+    async function createRoom() {
+        const roomId = generateRoomId();
+        await joinRoom(roomId);
+        try {
+            await navigator.clipboard.writeText(roomId);
+            alert(`房间号: ${roomId}\n已复制到剪贴板，请发送给朋友`);
+        } catch(e) {
+            alert(`房间号: ${roomId}\n请复制发送给朋友`);
+        }
+    }
+
+    // ========== Camera Init ==========
+    async function initCamera() {
+        try {
+            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            $('localVideo').srcObject = localStream;
+            $('localIdleHint').style.display = 'none';
+            $('micBtn').disabled = false;
+            updateMicUI();
+            updateVideoUI();
+            updateStatus("摄像头已开启，可创建或加入房间");
+        } catch(e) {
+            if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+                updateStatus("请允许摄像头和麦克风权限后刷新页面", true);
+            } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+                updateStatus("未检测到摄像头或麦克风设备", true);
+            } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+                updateStatus("摄像头或麦克风被其他应用占用", true);
+            } else {
+                updateStatus("摄像头启动失败: " + e.message, true);
+            }
+        }
+    }
+
+    // ========== Init ==========
+    window.onload = async () => {
+        await connectWebSocket().catch(() => updateStatus("WebSocket 连接失败", true));
+        await initCamera();
+    };
+
+    $('createBtn').onclick = createRoom;
+    $('joinBtn').onclick = () => {
+        const roomId = $('roomIdInput').value.trim().toUpperCase();
+        if (roomId) joinRoom(roomId);
+        else alert("请输入房间号");
+    };
+    $('hangupBtn').onclick = () => hangup(true);
+    $('micBtn').onclick = toggleMic;
+    $('videoBtn').onclick = toggleVideo;
+</script>
+</body>
+</html>

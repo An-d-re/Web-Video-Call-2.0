@@ -1,0 +1,14 @@
+{
+    "iceServers": [
+        { "urls": "stun:stun.qq.com:3478" },
+        { "urls": "stun:stun.miwifi.com:3478" },
+        {
+            "urls": [
+                "turn:47.109.205.231:3478?transport=udp",
+                "turn:47.109.205.231:3478?transport=tcp"
+            ],
+            "username": "webrtc",
+            "credential": "webrtc123"
+        }
+    ]
+}
