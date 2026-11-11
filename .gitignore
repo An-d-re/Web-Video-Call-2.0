@@ -16,6 +16,24 @@ third_party/
 *.pem
 *.key
 
+# TURN/ICE 凭据（含明文口令，模板见 turn_config.example.json）
+turn_config.json
+
+# 本地工具配置
+.claude/
+
 # 日志与临时文件
 *.log
 logs/
+.tmp/
+
+# Go 构建缓存与模块缓存（放在工作区内，避免污染 C 盘）
+.gocache/
+.gopath/
+
+# Go 构建产物
+auth/auth-dev.exe
+auth/auth
+
+# 本地开发环境安装脚本的执行残留
+_install/

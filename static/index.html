@@ -221,6 +221,27 @@
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
+        /* ===== Remote Mic Badge ===== */
+        .mic-badge {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            display: none;
+            align-items: center;
+            gap: 4px;
+            background: rgba(239, 68, 68, 0.9);
+            backdrop-filter: blur(6px);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: #fff;
+            z-index: 4;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+        }
+        .mic-badge.active { display: inline-flex; }
+        .mic-badge svg { width: 13px; height: 13px; stroke: #fff; }
+
         /* ===== Video Overlay ===== */
         .video-overlay {
             position: absolute;
@@ -352,6 +373,34 @@
             letter-spacing: 0.02em;
         }
 
+        /* ===== User Bar ===== */
+        .user-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+            margin-bottom: 0.9rem;
+            padding: 0.4rem 0.8rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+        }
+        .user-bar strong { color: var(--text); font-weight: 600; }
+        .btn-logout {
+            padding: 0.3rem 0.8rem;
+            font-size: 0.75rem;
+            border-radius: var(--radius-xl);
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all .2s ease;
+            font-family: inherit;
+        }
+        .btn-logout:hover { border-color: var(--danger); color: #fca5a5; }
+
         /* ===== Responsive ===== */
         @media (max-width: 700px) {
             body { padding: 12px; }
@@ -365,6 +414,12 @@
 </head>
 <body>
 <div class="call-container">
+
+    <!-- User Bar -->
+    <div class="user-bar">
+        <span>已登录：<strong id="userName">—</strong></span>
+        <button class="btn-logout" id="logoutBtn" type="button">退出登录</button>
+    </div>
 
     <!-- Header -->
     <div class="header">
@@ -395,8 +450,8 @@
                     </svg>
                     <span>摄像头已关闭</span>
                 </div>
-                <div class="idle-hint" id="localIdleHint">等待摄像头...</div>
-                <div class="video-label">本地</div>
+                <div class="idle-hint" id="localIdleHint">摄像头未开启</div>
+                <div class="video-label" id="localLabel">本地</div>
             </div>
         </div>
 
@@ -411,7 +466,17 @@
                     <span>对方已关闭摄像头</span>
                 </div>
                 <div class="idle-hint" id="remoteIdleHint">等待加入房间...</div>
-                <div class="video-label">对方</div>
+                <div class="video-label" id="remoteLabel">对方</div>
+                <div class="mic-badge" id="remoteMicBadge">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                        <path d="M9 3v5.5l5.88 5.88A3 3 0 0 0 15 8V3a3 3 0 0 0-6 0z"/>
+                        <line x1="9" y1="13" x2="9" y2="21"/>
+                        <line x1="5" y1="21" x2="19" y2="21"/>
+                        <path d="M17 12a7 7 0 0 1-1.83 4.76"/>
+                    </svg>
+                    <span>对方已静音</span>
+                </div>
             </div>
         </div>
     </div>
@@ -419,38 +484,38 @@
     <!-- Button Bar -->
     <div class="button-bar">
         <div class="button-row">
-            <button class="btn btn-control on" id="micBtn" disabled>
+            <button class="btn btn-control off" id="micBtn">
                 <!-- Mic On Icon -->
-                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
                     <rect x="9" y="1" width="6" height="11" rx="3"/>
                     <path d="M5 11a7 7 0 0 0 14 0"/>
                     <line x1="12" y1="16" x2="12" y2="21"/>
                     <line x1="8" y1="21" x2="16" y2="21"/>
                 </svg>
                 <!-- Mic Off Icon -->
-                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="1" y1="1" x2="23" y2="23"/>
                     <path d="M9 3v5.5l5.88 5.88A3 3 0 0 0 15 8V3a3 3 0 0 0-6 0z"/>
                     <line x1="9" y1="13" x2="9" y2="21"/>
                     <line x1="5" y1="21" x2="19" y2="21"/>
                     <path d="M17 12a7 7 0 0 1-1.83 4.76"/>
                 </svg>
-                <span id="micLabel">关闭麦克风</span>
+                <span id="micLabel">打开麦克风</span>
             </button>
 
-            <button class="btn btn-control on" id="videoBtn" disabled>
+            <button class="btn btn-control off" id="videoBtn">
                 <!-- Camera On Icon -->
-                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
                     <rect x="2" y="5" width="15" height="14" rx="3"/>
                     <polygon points="17 9 22 7 22 17 17 15"/>
                 </svg>
                 <!-- Camera Off Icon -->
-                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                     <line x1="1" y1="1" x2="23" y2="23"/>
                     <path d="M15 5v3.5l4.53 2.27.47.24V17l-5-2.5V12"/>
                     <rect x="2" y="5" width="11" height="11" rx="2"/>
                 </svg>
-                <span id="videoLabel">关闭摄像头</span>
+                <span id="videoLabel">开启摄像头</span>
             </button>
         </div>
         <div class="button-row">
@@ -465,21 +530,34 @@
     </div>
 </div>
 
+<script src="js/auth.js"></script>
 <script>
     // ========== State ==========
-    let localStream = null;
+    let localStream = new MediaStream();   // 本地音视频轨道容器，按需填充
     let peerConn = null;
     let ws = null;
     let inCall = false;
-    let currentRoomId = null;
-    let audioMuted = false;
-    let videoMuted = false;
+    let currentRoomId = null;   // 服务端已通过 joined 确认的房间
+    let pendingRoomId = null;   // 已发出 join_room、等待服务端确认的房间
+    let audioMuted = true;      // 初始未开启
+    let videoMuted = true;      // 初始未开启
+    let micStarted = false;     // 是否已获取过麦克风设备
+    let videoStarted = false;   // 是否已获取过摄像头设备
     let remoteVideoMuted = false;
+    let remoteHasVideo = false; // 对方是否发来过视频轨道
+    let remoteMicMuted = false;    // 对方当前是否停止发送音频
+    let remoteMicStarted = false;  // 对方是否获取过麦克风设备（区分"未开启"与"已关闭"）
     let isInitiator = false;
+    let isPolite = false;       // perfect negotiation：响应方在协商冲突时让步
     let audioSender = null;
+    let makingOffer = false;
+    let ignoreOffer = false;
     let wsDisconnectedIntentionally = false;
     let byeSent = false;
     let wsReconnectAttempts = 0;
+    let authed = false;             // 本条 WS 连接是否已通过 auth 鉴权
+    let reconnectTimer = null;      // 待执行的重连定时器（单例，防止重连叠加出多个 socket）
+    let connectPromise = null;      // 进行中的建连流程（单飞，防止并发建连）
     let iceRestartTimer = null;
     const WS_MAX_RECONNECT = 10;
     const WS_RECONNECT_BASE = 1000;
@@ -526,7 +604,7 @@
         const iconOff = btn.querySelector('.icon-off');
         if (videoMuted) {
             btn.className = 'btn btn-control off';
-            label.textContent = '打开摄像头';
+            label.textContent = '开启摄像头';
             iconOn.style.display = 'none';
             iconOff.style.display = 'block';
         } else {
@@ -535,19 +613,47 @@
             iconOn.style.display = 'block';
             iconOff.style.display = 'none';
         }
-        // 更新本地遮罩
-        $('localOverlay').classList.toggle('active', videoMuted);
-        $('localIdleHint').style.display = videoMuted ? 'none' : '';
+        if (!videoStarted) {
+            // 从未开启过：显示提示，不显示"已关闭"遮罩
+            $('localOverlay').classList.remove('active');
+            $('localIdleHint').style.display = '';
+        } else {
+            $('localOverlay').classList.toggle('active', videoMuted);
+            $('localIdleHint').style.display = 'none';
+        }
+        $('localCard').classList.toggle('connected', videoStarted && !videoMuted);
     }
 
     function updateRemoteVideoUI() {
-        $('remoteOverlay').classList.toggle('active', remoteVideoMuted);
+        $('remoteOverlay').classList.toggle('active', remoteHasVideo && remoteVideoMuted);
+        if (!remoteHasVideo) {
+            $('remoteIdleHint').textContent = inCall ? '对方未开启摄像头' : '等待加入房间...';
+            $('remoteIdleHint').style.display = '';
+        } else {
+            $('remoteIdleHint').style.display = 'none';
+        }
     }
 
-    function sendVideoMute() {
-        if (ws && ws.readyState === WebSocket.OPEN && currentRoomId && inCall) {
-            ws.send(JSON.stringify({ type: "video_mute", muted: videoMuted }));
-        }
+    // 远端麦克风标识：只有"已拿到设备但停止发送"才显示"已静音"；
+    // 从未获取过设备属于"未开启"，与"已关闭"是两个不同状态（见 CONTEXT.md）
+    function updateRemoteMicUI() {
+        $('remoteMicBadge').classList.toggle('active',
+            inCall && remoteMicStarted && remoteMicMuted);
+    }
+
+    // 远端面板整体刷新
+    function updateRemoteUI() {
+        updateRemoteVideoUI();
+        updateRemoteMicUI();
+    }
+
+    // 上报本端媒体状态（视频 + 麦克风）。
+    // 服务端在同一个 join_room 处理里已经把 start_call 发给双方，顺序有保证，
+    // 所以这里可以立即上报，不需要再靠 300ms 延时兜底。
+    function sendMediaState() {
+        if (!ws || ws.readyState !== WebSocket.OPEN || !inCall) return;
+        ws.send(JSON.stringify({ type: "video_mute", muted: videoMuted }));
+        ws.send(JSON.stringify({ type: "mic_mute", muted: audioMuted, started: micStarted }));
     }
 
     // ========== Room ==========
@@ -570,27 +676,39 @@
         }
         audioSender = null;
 
-        // 同步 audio/video track 状态
-        if (localStream) {
-            localStream.getAudioTracks().forEach(track => track.enabled = !audioMuted);
-            localStream.getVideoTracks().forEach(track => track.enabled = !videoMuted);
-        }
-
         peerConn = new RTCPeerConnection(ICE_CONFIG);
 
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
-                const sender = peerConn.addTrack(track, localStream);
-                if (track.kind === 'audio') {
-                    audioSender = sender;
-                }
-            });
-        }
+        // 已有轨道直接加入；通话中新增的轨道由 toggle 函数负责
+        localStream.getTracks().forEach(track => {
+            track.enabled = (track.kind === 'audio') ? !audioMuted : !videoMuted;
+            const sender = peerConn.addTrack(track, localStream);
+            if (track.kind === 'audio') {
+                audioSender = sender;
+            }
+        });
+
+        // perfect negotiation：任何轨道变化都由这里统一发起协商
+        peerConn.onnegotiationneeded = async () => {
+            if (!inCall || !ws || ws.readyState !== WebSocket.OPEN) return;
+            try {
+                makingOffer = true;
+                const offer = await peerConn.createOffer();
+                await peerConn.setLocalDescription(offer);
+                ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
+            } catch (e) {
+                console.error("发起协商失败", e);
+            } finally {
+                makingOffer = false;
+            }
+        };
 
         peerConn.ontrack = (event) => {
-            $('remoteVideo').srcObject = event.streams[0];
-            $('remoteIdleHint').style.display = 'none';
+            if (event.track.kind === 'video') {
+                remoteHasVideo = true;
+            }
+            $('remoteVideo').srcObject = event.streams[0] || new MediaStream([event.track]);
             $('remoteCard').classList.add('connected');
+            updateRemoteVideoUI();
             updateStatus("通话中");
         };
 
@@ -627,35 +745,18 @@
 
     async function attemptIceRestart() {
         if (!peerConn || !inCall || !ws || ws.readyState !== WebSocket.OPEN) return;
+        if (peerConn.signalingState !== 'stable' || makingOffer) return;  // 有协商正在进行，等状态变化后重试
         iceRestartTimer = null;
         try {
+            makingOffer = true;
             const offer = await peerConn.createOffer({ iceRestart: true });
             await peerConn.setLocalDescription(offer);
             ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
             updateStatus("正在重新连接...");
         } catch(e) {
             updateStatus("ICE 重启失败，请尝试重新加入房间", true);
-        }
-    }
-
-    async function startCallAsInitiator() {
-        if (!peerConn) initPeerConnection();
-        try {
-            const offer = await peerConn.createOffer();
-            await peerConn.setLocalDescription(offer);
-            ws.send(JSON.stringify({ type: "offer", data: peerConn.localDescription }));
-            inCall = true;
-            isInitiator = true;
-            $('hangupBtn').disabled = false;
-            $('videoBtn').disabled = false;
-            $('localCard').classList.add('connected');
-            updateStatus("发起通话中...");
-            // 如果摄像头已关闭，通知对方
-            if (videoMuted) {
-                setTimeout(sendVideoMute, 300);
-            }
-        } catch(e) {
-            updateStatus("创建offer失败: " + e.message, true);
+        } finally {
+            makingOffer = false;
         }
     }
 
@@ -669,57 +770,107 @@
             return;
         }
 
+        if (data.type === "auth_ok") {
+            authed = true;
+            console.log("鉴权成功:", data);
+            if (data.displayName) $('userName').textContent = data.displayName;
+            else if (data.username) $('userName').textContent = data.username;
+            if (data.displayName) $('localLabel').textContent = data.displayName + '（我）';
+            updateStatus("已登录，可以创建或加入房间");
+
+            // 鉴权通过后，才补发入房请求
+            if (pendingRoomId) {
+                sendJoinRoom(pendingRoomId);
+            } else if (currentRoomId && !byeSent) {
+                sendJoinRoom(currentRoomId);
+            }
+            return;
+        }
+
+        if (data.type === "joined") {
+            // 服务端确认入房：到这一步才认为"真的在房间里"
+            currentRoomId = data.roomId || pendingRoomId;
+            pendingRoomId = null;
+            byeSent = false;
+            setRoomStatus(currentRoomId);
+            if (data.self && data.self.displayName) {
+                $('localLabel').textContent = data.self.displayName + '（我）';
+                $('userName').textContent = data.self.displayName;
+            }
+            updateStatus("已加入房间，等待对方...");
+            return;
+        }
+
         if (data.type === "start_call") {
             console.log("收到 start_call:", JSON.stringify(data));
             if (data.iceServers && Array.isArray(data.iceServers)) {
                 ICE_CONFIG.iceServers = data.iceServers;
                 console.log("已更新 ICE 配置:", JSON.stringify(ICE_CONFIG.iceServers));
             }
-            if (data.initiator === true) {
-                await startCallAsInitiator();
-            } else {
-                inCall = true;
-                isInitiator = false;
-                $('hangupBtn').disabled = false;
-                $('videoBtn').disabled = false;
-                $('micBtn').disabled = false;
-                updateStatus("等待对方连接...");
-                if (!peerConn) initPeerConnection();
-                // 如果摄像头已关闭，通知对方
-                if (videoMuted) {
-                    setTimeout(sendVideoMute, 300);
-                }
+            // 显示对方真实姓名
+            if (data.peer) {
+                const name = data.peer.displayName || data.peer.username;
+                if (name) $('remoteLabel').textContent = name;
             }
+            isInitiator = data.initiator === true;
+            isPolite = !isInitiator;   // 响应方在协商冲突时让步
+            byeSent = false;           // 新一次通话开始，清掉上一轮的挂断标记
+            inCall = true;
+            remoteHasVideo = false;
+            remoteVideoMuted = false;
+            remoteMicMuted = false;
+            remoteMicStarted = false;
+            if (!peerConn) initPeerConnection();   // 已有轨道会自动触发一次协商
+            $('hangupBtn').disabled = false;
+            updateRemoteUI();
+            updateStatus("通话中");
+            sendMediaState();          // 立刻上报本端媒体状态（服务端保证晚于 start_call 到达对端）
             return;
         }
 
         if (data.type === "offer") {
             if (!peerConn) initPeerConnection();
-            await peerConn.setRemoteDescription(data.data);
-            const answer = await peerConn.createAnswer();
-            await peerConn.setLocalDescription(answer);
-            ws.send(JSON.stringify({ type: "answer", data: answer }));
-            inCall = true;
-            $('hangupBtn').disabled = false;
-            $('videoBtn').disabled = false;
-            $('micBtn').disabled = false;
-            $('localCard').classList.add('connected');
-            updateStatus("通话中");
-            // 如果摄像头已关闭，通知对方
-            if (videoMuted) {
-                setTimeout(sendVideoMute, 300);
+            const offerCollision = makingOffer || peerConn.signalingState !== "stable";
+            ignoreOffer = !isPolite && offerCollision;
+            if (ignoreOffer) {
+                console.log("协商冲突：作为发起方忽略对方的 offer");
+                return;
+            }
+            try {
+                if (offerCollision) {
+                    // 让步方：放弃自己的 offer，接受对方的
+                    await Promise.all([
+                        peerConn.setLocalDescription({ type: "rollback" }),
+                        peerConn.setRemoteDescription(data.data)
+                    ]);
+                } else {
+                    await peerConn.setRemoteDescription(data.data);
+                }
+                const answer = await peerConn.createAnswer();
+                await peerConn.setLocalDescription(answer);
+                ws.send(JSON.stringify({ type: "answer", data: answer }));
+                inCall = true;
+                $('hangupBtn').disabled = false;
+                updateStatus("通话中");
+                sendMediaState();
+            } catch(e) {
+                console.error("处理 offer 失败", e);
             }
         } else if (data.type === "answer") {
-            if (!peerConn) initPeerConnection();
-            await peerConn.setRemoteDescription(data.data);
+            if (!peerConn || peerConn.signalingState !== "have-local-offer") {
+                console.warn("忽略状态不匹配的 answer，当前状态:", peerConn ? peerConn.signalingState : "无连接");
+                return;
+            }
+            try {
+                await peerConn.setRemoteDescription(data.data);
+            } catch(e) {
+                console.error("处理 answer 失败", e);
+                return;
+            }
             inCall = true;
             $('hangupBtn').disabled = false;
-            $('videoBtn').disabled = false;
-            $('micBtn').disabled = false;
             updateStatus("通话中");
-            if (videoMuted) {
-                setTimeout(sendVideoMute, 300);
-            }
+            sendMediaState();
         } else if (data.type === "ice") {
             if (peerConn) {
                 try {
@@ -728,7 +879,11 @@
             }
         } else if (data.type === "video_mute") {
             remoteVideoMuted = data.muted === true;
-            updateRemoteVideoUI();
+            updateRemoteUI();
+        } else if (data.type === "mic_mute") {
+            remoteMicMuted = data.muted === true;
+            remoteMicStarted = data.started === true;
+            updateRemoteUI();
         } else if (data.type === "bye") {
             byeSent = true;
             hangup(false);
@@ -737,7 +892,34 @@
         } else if (data.type === "bye_ack") {
             console.log("对方已确认挂断");
         } else if (data.type === "error") {
-            updateStatus("错误: " + data.message, true);
+            // ---- 鉴权类错误：先尝试刷新令牌，失败则回登录页 ----
+            if (data.code === "invalid_token" || data.code === "auth_timeout" ||
+                data.code === "unauthorized") {
+                authed = false;
+                updateStatus("登录状态已失效，正在重新鉴权…", true);
+                // 记住想去的房间，重新鉴权成功后自动补发
+                if (!pendingRoomId) pendingRoomId = currentRoomId;
+                Auth.refresh().then((ok) => {
+                    if (ok && ws) {
+                        // 令牌换新了：直接在当前连接上重新鉴权
+                        sendAuth();
+                    } else {
+                        gotoLogin();
+                    }
+                });
+                return;
+            }
+
+            // ---- 其它错误 ----
+            if (pendingRoomId) {
+                pendingRoomId = null;
+                setRoomStatus(currentRoomId);
+            }
+            if (data.code === "room_full") {
+                updateStatus("房间已满（对方可能已断线，约 1 分钟后可重试）", true);
+            } else {
+                updateStatus("错误: " + (data.message || "未知错误"), true);
+            }
         }
     }
 
@@ -756,18 +938,16 @@
         audioSender = null;
 
         $('remoteVideo').srcObject = null;
-        $('remoteIdleHint').style.display = '';
         $('hangupBtn').disabled = true;
-        $('videoBtn').disabled = true;
-        $('localCard').classList.remove('connected');
         $('remoteCard').classList.remove('connected');
         document.title = "影音视界 · 房间视频通话";
 
-        // 重置视频静音状态
-        videoMuted = false;
+        // 挂断不改变本端设备状态，只重置远端的显示
+        remoteHasVideo = false;
         remoteVideoMuted = false;
-        updateVideoUI();
-        updateRemoteVideoUI();
+        remoteMicMuted = false;
+        remoteMicStarted = false;
+        updateRemoteUI();
 
         if (isActive && wasInCall && !byeSent) {
             if (currentRoomId && ws && ws.readyState === WebSocket.OPEN) {
@@ -783,108 +963,242 @@
     }
 
     // ========== Toggle Controls ==========
-    function toggleMic() {
-        if (!localStream) return;
-        const audioTracks = localStream.getAudioTracks();
-        if (audioTracks.length === 0) return;
-
-        audioMuted = !audioMuted;
-        audioTracks.forEach(track => track.enabled = !audioMuted);
-
-        if (inCall && audioSender) {
-            const params = audioSender.getParameters();
-            if (!params.encodings) params.encodings = [{}];
-            params.encodings.forEach(encoding => {
-                encoding.active = !audioMuted;
-            });
-            audioSender.setParameters(params).catch(e => console.error("设置发送器参数失败:", e));
+    function showDeviceError(e, deviceName) {
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+            updateStatus(`未授权${deviceName}，请在浏览器地址栏的权限设置中允许后重试`, true);
+        } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
+            updateStatus(`未检测到${deviceName}设备`, true);
+        } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
+            updateStatus(`${deviceName}被其他应用占用`, true);
+        } else {
+            updateStatus(`${deviceName}启动失败: ` + e.message, true);
         }
-
-        updateMicUI();
     }
 
-    function toggleVideo() {
-        if (!localStream) return;
-        const videoTracks = localStream.getVideoTracks();
-        if (videoTracks.length === 0) return;
+    async function toggleMic() {
+        if (!micStarted) {
+            // 首次开启：获取设备（会弹一次权限请求），通话中则会触发一次重协商
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            } catch (e) {
+                showDeviceError(e, '麦克风');
+                return;
+            }
+            const track = stream.getAudioTracks()[0];
+            localStream.addTrack(track);
+            micStarted = true;
+            audioMuted = false;
+            if (peerConn && inCall) {
+                audioSender = peerConn.addTrack(track, localStream);
+            }
+            if (!inCall) updateStatus("麦克风已开启，可创建或加入房间");
+        } else {
+            audioMuted = !audioMuted;
+            localStream.getAudioTracks().forEach(track => track.enabled = !audioMuted);
+            if (inCall && audioSender) {
+                const params = audioSender.getParameters();
+                if (!params.encodings) params.encodings = [{}];
+                params.encodings.forEach(encoding => {
+                    encoding.active = !audioMuted;
+                });
+                audioSender.setParameters(params).catch(e => console.error("设置发送器参数失败:", e));
+            }
+        }
+        updateMicUI();
+        sendMediaState();
+    }
 
-        videoMuted = !videoMuted;
-        videoTracks.forEach(track => track.enabled = !videoMuted);
-
+    async function toggleVideo() {
+        if (!videoStarted) {
+            // 首次开启：获取设备（会弹一次权限请求），通话中则会触发一次重协商
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            } catch (e) {
+                showDeviceError(e, '摄像头');
+                return;
+            }
+            const track = stream.getVideoTracks()[0];
+            localStream.addTrack(track);
+            videoStarted = true;
+            videoMuted = false;
+            if (peerConn && inCall) {
+                peerConn.addTrack(track, localStream);
+            }
+            if (!inCall) updateStatus("摄像头已开启，可创建或加入房间");
+        } else {
+            videoMuted = !videoMuted;
+            localStream.getVideoTracks().forEach(track => track.enabled = !videoMuted);
+        }
+        $('localVideo').srcObject = localStream;
+        $('localVideo').play().catch(() => {});
         updateVideoUI();
-        sendVideoMute();
+        sendMediaState();
     }
 
     // ========== WebSocket ==========
+    function clearReconnectTimer() {
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+    }
+
+    // 统一入口：把"我想在哪个房间"告诉服务端（是否真的进房以 joined 应答为准）
+    // 注意：必须先通过 auth 鉴权，否则服务端会回 unauthorized。
+    function sendJoinRoom(roomId) {
+        if (!roomId || !authed || !ws || ws.readyState !== WebSocket.OPEN) return false;
+        try {
+            ws.send(JSON.stringify({ type: "join_room", roomId: roomId }));
+        } catch (e) {
+            pendingRoomId = null;
+            updateStatus("加入房间失败: " + e.message, true);
+            return false;
+        }
+        updateStatus("正在加入房间...");
+        return true;
+    }
+
+    // 建连后的第一件事：发送 auth。
+    // 服务端要求 5 秒内发出，否则按 auth_timeout 断开。
+    function sendAuth() {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        if (!Auth.token) {
+            // 内存里没有 accessToken：用 httpOnly Cookie 换一个再重试
+            updateStatus("正在恢复登录状态…");
+            Auth.refresh().then((ok) => {
+                if (ok) sendAuth();
+                else gotoLogin();
+            });
+            return;
+        }
+
+        try {
+            ws.send(JSON.stringify({ type: "auth", token: Auth.token }));
+            updateStatus("正在鉴权…");
+        } catch (e) {
+            updateStatus("鉴权失败: " + e.message, true);
+        }
+    }
+
+    // 登录态彻底失效：断开并回到登录页（不再重连）
+    function gotoLogin() {
+        wsDisconnectedIntentionally = true;
+        clearReconnectTimer();
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+            try { ws.close(1000, "go to login"); } catch (e) { /* 忽略 */ }
+        }
+        location.replace("login.html");
+    }
+
+    // 重连排程：单例定时器，重复触发不会叠加出多个 socket
+    function scheduleReconnect() {
+        if (wsDisconnectedIntentionally) return;
+        if (reconnectTimer) return;                        // 已有重连计划，不重复排程
+        if (wsReconnectAttempts >= WS_MAX_RECONNECT) {
+            updateStatus("连接已断开，请刷新页面", true);
+            return;
+        }
+        const delay = Math.min(WS_RECONNECT_BASE * Math.pow(2, wsReconnectAttempts), 30000);
+        wsReconnectAttempts++;
+        updateStatus(`正在重新连接... (${wsReconnectAttempts}/${WS_MAX_RECONNECT})`, true);
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connectWebSocket().catch(() => {});
+        }, delay);
+    }
+
+    // 建连单飞：同一时刻只允许一条建连流程，重复调用复用同一个 Promise
     function connectWebSocket() {
-        return new Promise((resolve, reject) => {
+        if (ws && ws.readyState === WebSocket.OPEN) return Promise.resolve();
+        if (connectPromise) return connectPromise;
+
+        connectPromise = new Promise((resolve, reject) => {
             const protocol = location.protocol === "https:" ? "wss" : "ws";
             const wsUrl = `${protocol}://${location.host}/ws`;
-            ws = new WebSocket(wsUrl);
+            const socket = new WebSocket(wsUrl);
+            ws = socket;
 
-            ws.onopen = () => {
+            socket.onopen = () => {
                 wsDisconnectedIntentionally = false;
                 wsReconnectAttempts = 0;
-                console.log("WebSocket 已连接");
-                if (currentRoomId && !byeSent) {
-                    ws.send(JSON.stringify({ type: "join_room", roomId: currentRoomId }));
-                    updateStatus("已重新加入房间");
-                }
+                authed = false;
+                clearReconnectTimer();
+                console.log("WebSocket 已连接，发送鉴权");
+                // 建连后第一件事是鉴权；入房在收到 auth_ok 之后才发
+                sendAuth();
                 resolve();
             };
 
-            ws.onerror = () => {
-                if (wsReconnectAttempts === 0) {
-                    updateStatus("WebSocket 连接失败", true);
-                }
-                reject();
+            socket.onerror = () => {
+                if (wsReconnectAttempts === 0) updateStatus("WebSocket 连接失败", true);
+                reject(new Error("WebSocket 连接失败"));
             };
 
-            ws.onmessage = handleSignaling;
+            socket.onmessage = handleSignaling;
 
-            ws.onclose = () => {
-                if (!wsDisconnectedIntentionally && wsReconnectAttempts < WS_MAX_RECONNECT) {
-                    const delay = Math.min(WS_RECONNECT_BASE * Math.pow(2, wsReconnectAttempts), 30000);
-                    wsReconnectAttempts++;
-                    updateStatus(`正在重新连接... (${wsReconnectAttempts}/${WS_MAX_RECONNECT})`, true);
-                    setTimeout(() => {
-                        connectWebSocket().catch(() => {});
-                    }, delay);
-                } else if (!wsDisconnectedIntentionally) {
-                    updateStatus("连接已断开，请刷新页面", true);
-                }
-                if (!wsDisconnectedIntentionally && inCall) {
-                    updateStatus("网络连接已断开", true);
-                    hangup();
-                }
+            socket.onclose = () => {
+                if (ws === socket) ws = null;
+                if (wsDisconnectedIntentionally) return;
+                // 通话中掉线：先结束本次通话（socket 已关闭，不会发出 bye）
+                if (inCall) hangup();
+                scheduleReconnect();
             };
+        }).finally(() => {
+            connectPromise = null;
         });
+
+        return connectPromise;
+    }
+
+    // 页面真正离开时主动断开，服务端可立刻通知对端，不必等 TCP 超时
+    function closeSocketIntentionally() {
+        wsDisconnectedIntentionally = true;
+        clearReconnectTimer();
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+            try { ws.close(1000, "page unload"); } catch (e) { /* 忽略 */ }
+        }
     }
 
     // ========== Room Operations ==========
-    async function joinRoom(roomId) {
-        if (!ws || ws.readyState !== WebSocket.OPEN) {
-            try {
-                await connectWebSocket();
-            } catch (e) {
-                updateStatus("连接服务器失败，请检查网络", true);
-                return;
-            }
+    function setRoomStatus(roomId) {
+        const el = $('roomStatus');
+        if (!roomId) {
+            el.textContent = '未加入房间';
+            return;
         }
+        el.textContent = '当前房间: ';
+        const span = document.createElement('span');
+        span.className = 'room-id';
+        span.textContent = roomId;
+        el.appendChild(span);
+    }
+
+    async function joinRoom(roomId) {
+        // 只记录"期望房间"，真正的 join_room 由 onopen 统一补发；
+        // 是否算加入成功以服务端返回的 joined 为准（见 handleSignaling）
+        pendingRoomId = roomId;
+        byeSent = false;
+        remoteHasVideo = false;
+        remoteVideoMuted = false;
+        remoteMicMuted = false;
+        remoteMicStarted = false;
+        updateRemoteUI();
+        setRoomStatus(roomId);
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            sendJoinRoom(roomId);
+            return;
+        }
+        updateStatus("正在连接服务器...");
         try {
-            byeSent = false;
-            videoMuted = false;
-            remoteVideoMuted = false;
-            updateVideoUI();
-            updateRemoteVideoUI();
-            ws.send(JSON.stringify({ type: "join_room", roomId: roomId }));
-            currentRoomId = roomId;
-            $('roomStatus').innerHTML = `当前房间: <span class="room-id">${roomId}</span>`;
-            $('micBtn').disabled = false;
-            $('remoteIdleHint').style.display = '';
-            updateStatus("已加入房间，等待对方...");
+            await connectWebSocket();
         } catch (e) {
-            updateStatus("加入房间失败: " + e.message, true);
+            pendingRoomId = null;
+            setRoomStatus(currentRoomId);
+            updateStatus("连接服务器失败，请检查网络", true);
         }
     }
 
@@ -899,33 +1213,24 @@
         }
     }
 
-    // ========== Camera Init ==========
-    async function initCamera() {
-        try {
-            localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            $('localVideo').srcObject = localStream;
-            $('localIdleHint').style.display = 'none';
-            $('micBtn').disabled = false;
-            updateMicUI();
-            updateVideoUI();
-            updateStatus("摄像头已开启，可创建或加入房间");
-        } catch(e) {
-            if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
-                updateStatus("请允许摄像头和麦克风权限后刷新页面", true);
-            } else if (e.name === 'NotFoundError' || e.name === 'DevicesNotFoundError') {
-                updateStatus("未检测到摄像头或麦克风设备", true);
-            } else if (e.name === 'NotReadableError' || e.name === 'TrackStartError') {
-                updateStatus("摄像头或麦克风被其他应用占用", true);
-            } else {
-                updateStatus("摄像头启动失败: " + e.message, true);
-            }
-        }
-    }
-
     // ========== Init ==========
     window.onload = async () => {
+        updateMicUI();
+        updateVideoUI();
+
+        // 没有有效登录态就直接回登录页（refresh Cookie 也过期时）
+        const loggedIn = await Auth.ensureSession();
+        if (!loggedIn) {
+            location.replace("login.html");
+            return;
+        }
+
+        $('userName').textContent = Auth.user
+            ? (Auth.user.displayName || Auth.user.username)
+            : "已登录";
+
+        updateStatus("点击下方按钮开启摄像头或麦克风");
         await connectWebSocket().catch(() => updateStatus("WebSocket 连接失败", true));
-        await initCamera();
     };
 
     $('createBtn').onclick = createRoom;
@@ -937,6 +1242,16 @@
     $('hangupBtn').onclick = () => hangup(true);
     $('micBtn').onclick = toggleMic;
     $('videoBtn').onclick = toggleVideo;
+    $('logoutBtn').onclick = async () => {
+        $('logoutBtn').disabled = true;
+        await Auth.logout();
+        gotoLogin();
+    };
+
+    // 页面真正离开时主动断开（进入 bfcache 时 persisted=true，不能关，否则返回页面会留下死连接）
+    window.addEventListener('pagehide', (e) => {
+        if (!e.persisted) closeSocketIntentionally();
+    });
 </script>
 </body>
 </html>

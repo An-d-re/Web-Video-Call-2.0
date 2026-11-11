@@ -15,6 +15,9 @@
 #include <mutex>
 #include <queue>
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <ctime>
 
 #include <openssl/sha.h>
 #include <openssl/bio.h>
@@ -23,13 +26,67 @@
 
 #include <json/json.h>
 
+#include "jwt_verify.h"
+
 using namespace muduo;
 using namespace muduo::net;
 
 const int PORT = 8888;
 
+// ========== 鉴权配置（来自环境变量）==========
+// JWT_SECRET 必须与 auth 服务一致，长度 ≥32 字节；AUTH_REQUIRED=false 可临时退回匿名模式。
+std::string g_jwt_secret;
+bool g_auth_required = true;
+const int64_t kAuthTimeoutMs = 5000;  // 建连后必须在此时间内发出 auth
+
 std::set<TcpConnectionPtr> g_ws_clients;
 std::mutex g_clients_mutex;
+
+// ========== 连接鉴权状态 ==========
+struct ConnAuth {
+    bool authenticated = false;
+    int64_t userId = 0;
+    std::string username;
+    std::string displayName;
+    int64_t deadlineMs = 0;  // 未认证时的截止时刻（0 = 不设限）
+};
+
+// 加锁顺序约定：允许 g_rooms_mutex -> g_auth_mutex，
+// 禁止反向（持有 g_auth_mutex 时不得再去取 g_rooms_mutex），否则可能死锁。
+std::unordered_map<TcpConnectionPtr, ConnAuth> g_auth;
+std::mutex g_auth_mutex;
+
+int64_t NowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+// 读取连接的身份；未认证返回 false。
+bool GetAuth(const TcpConnectionPtr& conn, ConnAuth* out) {
+    std::lock_guard<std::mutex> lock(g_auth_mutex);
+    auto it = g_auth.find(conn);
+    if (it == g_auth.end() || !it->second.authenticated) return false;
+    if (out) *out = it->second;
+    return true;
+}
+
+// 用户身份 -> JSON（用于 joined / start_call）
+Json::Value AuthToJson(const ConnAuth& a) {
+    Json::Value v;
+    v["userId"] = static_cast<Json::Int64>(a.userId);
+    v["username"] = a.username;
+    v["displayName"] = a.displayName;
+    return v;
+}
+
+// 匿名模式下也要有可显示的名字
+Json::Value GuestJson() {
+    Json::Value v;
+    v["userId"] = static_cast<Json::Int64>(0);
+    v["username"] = "guest";
+    v["displayName"] = "游客";
+    return v;
+}
 
 // 房间管理：roomId -> 该房间内的连接列表（最多2人）
 std::unordered_map<std::string, std::vector<TcpConnectionPtr>> g_rooms;
@@ -51,6 +108,13 @@ std::mutex g_frame_buffers_mutex;
 // TCP 层面的不完整帧缓冲区（解决跨TCP分片的WebSocket帧问题）
 std::unordered_map<TcpConnectionPtr, std::string> g_raw_buffer;
 std::mutex g_raw_buffer_mutex;
+
+// 心跳存活：连接 -> 已发出 ping 但尚未收到 pong。
+// 条目存在 = 该连接欠我们一个 pong；连续两轮都没有就判定为半开连接并回收。
+// 没有这个机制时，客户端断网但 TCP 未正常关闭，连接会永远留在房间里，
+// 表现为"对方还能看到我在房间里，我重连却提示房间已满"。
+std::unordered_map<TcpConnectionPtr, bool> g_pong_pending;
+std::mutex g_heartbeat_mutex;
 
 // ICE 服务器配置（从 turn_config.json 加载）
 Json::Value g_turn_config;
@@ -232,7 +296,11 @@ std::string handleWsFrame(const TcpConnectionPtr& conn, const std::string& rawDa
     }
 
     if (frame.opcode == 0xA) {
-        // Pong — 心跳响应，不需要上层处理
+        // Pong — 心跳响应：销掉该连接欠下的 pong
+        {
+            std::lock_guard<std::mutex> lock(g_heartbeat_mutex);
+            g_pong_pending.erase(conn);
+        }
         return "";
     }
 
@@ -348,6 +416,16 @@ void onConnection(const TcpConnectionPtr& conn) {
             std::lock_guard<std::mutex> lock(g_bye_mutex);
             g_bye_processed.erase(conn);
         }
+        // 清理心跳状态
+        {
+            std::lock_guard<std::mutex> lock(g_heartbeat_mutex);
+            g_pong_pending.erase(conn);
+        }
+        // 清理鉴权状态
+        {
+            std::lock_guard<std::mutex> lock(g_auth_mutex);
+            g_auth.erase(conn);
+        }
         // 清理帧分片缓冲
         {
             std::lock_guard<std::mutex> lock(g_frame_buffers_mutex);
@@ -376,6 +454,67 @@ void onConnection(const TcpConnectionPtr& conn) {
             }
         }
     }
+}
+
+// ========== 辅助函数：把连接从"除 keepRoomId 之外"的房间里摘掉 ==========
+// 一条连接同一时刻只能属于一个房间。keepRoomId 必须排除在外，
+// 否则同房间的重复 join_room 会把正在进行的通话打断。
+// 返回被离开房间里的另一位对等端（若有），调用方负责通知它。
+TcpConnectionPtr removeFromOtherRooms(const TcpConnectionPtr& conn,
+                                      const std::string& keepRoomId) {
+    std::lock_guard<std::mutex> lock(g_rooms_mutex);
+    for (auto it = g_rooms.begin(); it != g_rooms.end();) {
+        if (it->first == keepRoomId) {
+            ++it;
+            continue;
+        }
+        auto& clients = it->second;
+        auto pos = std::find(clients.begin(), clients.end(), conn);
+        if (pos == clients.end()) {
+            ++it;
+            continue;
+        }
+        std::string leftRoom = it->first;
+        clients.erase(pos);
+        TcpConnectionPtr other = clients.empty() ? nullptr : clients[0];
+        LOG_INFO << "连接离开房间 " << leftRoom << "（切换到房间 " << keepRoomId << "）";
+        if (clients.empty()) {
+            g_rooms.erase(it);
+        }
+        return other;
+    }
+    return nullptr;
+}
+
+// ========== 下行消息辅助 ==========
+void sendJson(const TcpConnectionPtr& conn, const Json::Value& msg) {
+    if (conn && conn->connected()) {
+        conn->send(wrapWsFrame(msg.toStyledString()));
+    }
+}
+
+// 入房应答。客户端只有收到 joined 才会把房间标记为"已确认"，
+// 避免乐观更新导致的"界面上已进房、服务端其实没进"。
+// 注意：调用点在 g_rooms_mutex 之下，这里会再取 g_auth_mutex（符合约定的加锁顺序）。
+void sendJoined(const TcpConnectionPtr& conn, const std::string& roomId, size_t peerCount) {
+    Json::Value ack;
+    ack["type"] = "joined";
+    ack["roomId"] = roomId;
+    ack["peers"] = static_cast<Json::UInt>(peerCount);
+
+    ConnAuth me;
+    ack["self"] = GetAuth(conn, &me) ? AuthToJson(me) : GuestJson();
+
+    sendJson(conn, ack);
+}
+
+void sendError(const TcpConnectionPtr& conn, const std::string& code,
+               const std::string& message) {
+    Json::Value err;
+    err["type"] = "error";
+    err["code"] = code;
+    err["message"] = message;
+    sendJson(conn, err);
 }
 
 // ========== 消息回调 ==========
@@ -411,6 +550,12 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
                 std::lock_guard<std::mutex> lock(g_clients_mutex);
                 g_ws_clients.insert(conn);
                 LOG_INFO << "WebSocket 握手成功！当前在线：" << g_ws_clients.size();
+            }
+            // 开启鉴权倒计时：5 秒内必须发出 auth，否则被定时器回收
+            if (g_auth_required) {
+                std::lock_guard<std::mutex> lock(g_auth_mutex);
+                ConnAuth& st = g_auth[conn];
+                st.deadlineMs = NowMs() + kAuthTimeoutMs;
             }
         } else {
             conn->shutdown();
@@ -501,27 +646,118 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
         }
         std::string type = root.get("type", "").asString();
 
+        // ---------- 鉴权 ----------
+        if (type == "auth") {
+            if (g_jwt_secret.empty()) {
+                LOG_ERROR << "收到 auth 但服务端未配置 JWT_SECRET";
+                sendError(conn, "auth_unavailable", "服务端未启用鉴权");
+                continue;
+            }
+
+            const std::string token = root.get("token", "").asString();
+            jwt::Claims claims;
+            const std::string reason = jwt::Verify(
+                token, g_jwt_secret, static_cast<int64_t>(::time(nullptr)), &claims);
+
+            if (reason != jwt::kOk) {
+                LOG_WARN << "鉴权失败 [" << reason << "] 来源 "
+                         << conn->peerAddress().toIpPort();
+                sendError(conn, "invalid_token", "凭证无效或已过期");
+                continue;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(g_auth_mutex);
+                ConnAuth& st = g_auth[conn];
+                st.authenticated = true;
+                st.userId = claims.sub;
+                st.username = claims.username;
+                st.displayName = claims.displayName;
+                st.deadlineMs = 0;  // 已认证，取消倒计时
+            }
+
+            Json::Value ok;
+            ok["type"] = "auth_ok";
+            ok["userId"] = static_cast<Json::Int64>(claims.sub);
+            ok["username"] = claims.username;
+            ok["displayName"] = claims.displayName;
+            sendJson(conn, ok);
+
+            LOG_INFO << "鉴权成功: " << claims.username
+                     << " (id=" << claims.sub << ") 来源 "
+                     << conn->peerAddress().toIpPort();
+            continue;
+        }
+
         if (type == "join_room") {
+            if (g_auth_required && !GetAuth(conn, nullptr)) {
+                sendError(conn, "unauthorized", "请先登录");
+                continue;
+            }
             std::string roomId = root.get("roomId", "").asString();
             if (roomId.empty()) continue;
+
+            // 1) 重新加入房间 = 新一次通话的开始，必须清除这条连接的历史挂断标记。
+            // 否则连接复用（挂断后再次加入同一房间）时，第二次 bye 会被当成
+            // "重复请求"丢弃，连接永久留在房间里，之后该房间一直报"房间已满"。
+            // 刻意放在取 g_rooms_mutex 之前，避免引入 g_rooms -> g_bye 的嵌套加锁。
+            {
+                std::lock_guard<std::mutex> lock(g_bye_mutex);
+                g_bye_processed.erase(conn);
+            }
+
+            // 2) 一条连接只能属于一个房间：先从其它房间摘掉，并通知旧对端
+            TcpConnectionPtr oldPeer = removeFromOtherRooms(conn, roomId);
+            if (oldPeer && oldPeer->connected()) {
+                bool peerHasBye = false;
+                {
+                    std::lock_guard<std::mutex> lock(g_bye_mutex);
+                    peerHasBye = (g_bye_processed.find(oldPeer) != g_bye_processed.end());
+                }
+                if (!peerHasBye) {
+                    Json::Value byeMsg;
+                    byeMsg["type"] = "bye";
+                    LOG_INFO << "通知旧房间的对端：对方已转到其它房间";
+                    sendJson(oldPeer, byeMsg);
+                }
+            }
+
             std::lock_guard<std::mutex> lock(g_rooms_mutex);
             auto& clients = g_rooms[roomId];
+
+            // 同一连接重复 join 同一房间时保持幂等：否则 clients 里会出现两个相同连接，
+            // size()==2 会让这条连接在"只有自己一人"的情况下收到发给自己的一对 start_call。
+            // 幂等路径同样要回 ack，否则前端会一直停在"正在加入房间"。
+            if (std::find(clients.begin(), clients.end(), conn) != clients.end()) {
+                LOG_INFO << "连接已在房间 " << roomId << " 中，忽略重复 join_room";
+                sendJoined(conn, roomId, clients.size());
+                continue;
+            }
+
             if (clients.size() >= 2) {
-                Json::Value err;
-                err["type"] = "error";
-                err["message"] = "房间已满";
-                conn->send(wrapWsFrame(err.toStyledString()));
+                LOG_INFO << "房间 " << roomId << " 已满，拒绝加入";
+                sendError(conn, "room_full", "房间已满");
                 continue;
             }
             clients.push_back(conn);
             LOG_INFO << "客户端 " << conn->peerAddress().toIpPort()
                      << " 加入房间 " << roomId << "，当前人数 " << clients.size();
+            sendJoined(conn, roomId, clients.size());
             if (clients.size() == 2) {
                 TcpConnectionPtr initiator = clients[0];
                 TcpConnectionPtr responder = clients[1];
+
+                // 双方各自的身份，用来给对方显示真实姓名
+                ConnAuth aAuth, rAuth;
+                const bool aOk = GetAuth(initiator, &aAuth);
+                const bool rOk = GetAuth(responder, &rAuth);
+                const Json::Value aJson = aOk ? AuthToJson(aAuth) : GuestJson();
+                const Json::Value rJson = rOk ? AuthToJson(rAuth) : GuestJson();
+
                 Json::Value startMsg;
                 startMsg["type"] = "start_call";
                 startMsg["initiator"] = true;
+                startMsg["peer"] = rJson;  // 发给 initiator 的，是对端(responder)的身份
                 if (!g_turn_config.isNull() && g_turn_config.isMember("iceServers")) {
                     startMsg["iceServers"] = g_turn_config["iceServers"];
                     LOG_INFO << "start_call 已注入 ICE 配置 ("
@@ -530,14 +766,20 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
                     LOG_WARN << "start_call 未注入 ICE 配置（g_turn_config 为空或无 iceServers）";
                 }
                 initiator->send(wrapWsFrame(startMsg.toStyledString()));
+
                 startMsg["initiator"] = false;
+                startMsg["peer"] = aJson;  // 发给 responder 的，是对端(initiator)的身份
                 responder->send(wrapWsFrame(startMsg.toStyledString()));
-                LOG_INFO << "房间 " << roomId << " 已满，开始通话";
+
+                LOG_INFO << "房间 " << roomId << " 已满，开始通话："
+                         << aJson["displayName"].asString() << " <-> "
+                         << rJson["displayName"].asString();
             }
             continue;
         }
 
-        if (type == "offer" || type == "answer" || type == "ice" || type == "video_mute") {
+        if (type == "offer" || type == "answer" || type == "ice" ||
+            type == "video_mute" || type == "mic_mute") {
             std::lock_guard<std::mutex> lock(g_rooms_mutex);
             TcpConnectionPtr target = nullptr;
             for (auto& kv : g_rooms) {
@@ -630,8 +872,29 @@ int main() {
 
     // 加载 TURN 配置
     if (!loadTurnConfig("turn_config.json")) {
-        LOG_WARN << "未找到 turn_config.json，将不注入 ICE 服务器配置";
-        LOG_WARN << "前端将使用 index.html 中硬编码的 ICE 配置";
+        LOG_WARN << "未找到 turn_config.json（请从 turn_config.example.json 复制）";
+        LOG_WARN << "将不下发 ICE 配置，前端会退回内置的 STUN，无 TURN 中继";
+    }
+
+    // 加载鉴权配置（环境变量）
+    //   JWT_SECRET     与 auth 服务共享的 HS256 密钥，长度 ≥32 字节
+    //   AUTH_REQUIRED  默认 true；设为 false 可临时退回"匿名入房"（回滚阀门）
+    if (const char* secret = ::getenv("JWT_SECRET")) {
+        g_jwt_secret = secret;
+    }
+    if (const char* v = ::getenv("AUTH_REQUIRED")) {
+        const std::string flag(v);
+        g_auth_required = !(flag == "false" || flag == "0" || flag == "no");
+    }
+    if (g_auth_required) {
+        if (g_jwt_secret.size() < 32) {
+            LOG_ERROR << "JWT_SECRET 未设置或过短（需 ≥32 字节），且 AUTH_REQUIRED 未关闭";
+            LOG_ERROR << "请设置环境变量后重启；调试时可临时设 AUTH_REQUIRED=false";
+            return 1;
+        }
+        LOG_INFO << "鉴权已开启：WebSocket 建连后 5 秒内必须发送 auth";
+    } else {
+        LOG_WARN << "鉴权已关闭（AUTH_REQUIRED=false），任何人可直接 join_room，仅用于调试";
     }
 
     EventLoop loop;
@@ -642,16 +905,65 @@ int main() {
     server.setThreadNum(4);
     server.start();
 
-    // 定时心跳：每 30 秒向所有 WebSocket 客户端发送 ping
-    // 先拷贝连接列表再释放锁，避免在持有锁时调用 conn->send() 导致竞态
+    // 鉴权超时回收：每秒扫一次，把"建连后 5 秒内没发 auth"的连接关掉。
+    // 目的是防止有人只挂连接不认证、白占服务端资源。
+    loop.runEvery(1.0, []() {
+        std::vector<TcpConnectionPtr> expired;
+        const int64_t now = NowMs();
+        {
+            std::lock_guard<std::mutex> lock(g_auth_mutex);
+            for (auto& kv : g_auth) {
+                if (!kv.second.authenticated && kv.second.deadlineMs > 0 &&
+                    now > kv.second.deadlineMs) {
+                    expired.push_back(kv.first);
+                }
+            }
+        }
+        // 注意：必须在释放 g_auth_mutex 之后再关闭连接，
+        // 否则 onConnection 里再去取 g_auth_mutex 会自死锁。
+        for (auto& conn : expired) {
+            if (!conn || !conn->connected()) continue;
+            LOG_INFO << "鉴权超时，关闭连接: " << conn->peerAddress().toIpPort();
+            sendError(conn, "auth_timeout", "建连后 5 秒内未发送 auth");
+            conn->shutdown();
+        }
+    });
+
+    // 定时心跳：每 30 秒向所有 WebSocket 客户端发送 ping，并回收半开连接。
+    // 策略（两轮判定，最坏 60 秒回收）：
+    //   第 N 轮  ping，并记账"欠一个 pong"
+    //   第 N+1 轮  若仍欠着 pong => 客户端已失联，forceClose 回收
+    //   收到 pong 则销账
+    // 先拷贝连接列表再释放锁，避免在持有锁时调用 conn->send() 导致竞态。
     loop.runEvery(30.0, []() {
         std::vector<TcpConnectionPtr> clients;
         {
             std::lock_guard<std::mutex> lock(g_clients_mutex);
             clients.assign(g_ws_clients.begin(), g_ws_clients.end());
         }
-        for (auto& conn : clients) {
-            if (conn) sendPing(conn);
+
+        std::vector<TcpConnectionPtr> alive;
+        std::vector<TcpConnectionPtr> timeout;
+        {
+            std::lock_guard<std::mutex> lock(g_heartbeat_mutex);
+            for (auto& conn : clients) {
+                if (!conn) continue;
+                if (g_pong_pending.count(conn) > 0) {
+                    timeout.push_back(conn);       // 上一轮的 ping 没等到 pong
+                } else {
+                    g_pong_pending[conn] = true;
+                    alive.push_back(conn);
+                }
+            }
+        }
+
+        for (auto& conn : alive) {
+            sendPing(conn);
+        }
+        for (auto& conn : timeout) {
+            LOG_WARN << "心跳超时（30 秒未回 pong），回收半开连接："
+                     << conn->peerAddress().toIpPort();
+            conn->forceClose();
         }
     });
 
@@ -662,7 +974,8 @@ int main() {
     if (!g_turn_config.isNull()) {
         LOG_INFO << "ICE 配置：从 turn_config.json 动态下发";
     }
-    LOG_INFO << "WebSocket 心跳：每 30 秒 ping/pong";
+    LOG_INFO << "WebSocket 心跳：每 30 秒 ping，连续两次无 pong 回收连接";
+    LOG_INFO << "鉴权：" << (g_auth_required ? "开启（需在 5 秒内 auth）" : "关闭（匿名模式）");
     LOG_INFO << "=====================================";
 
     loop.loop();

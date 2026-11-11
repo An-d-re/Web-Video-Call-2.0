@@ -1,0 +1,50 @@
+{
+  "_comment": "由 auth/vectors_test.go 生成，勿手改。验证实现见 tests/jwt_selftest.cpp",
+  "cases": [
+    {
+      "displayName": "阿伟",
+      "expect": "ok",
+      "name": "valid",
+      "sub": 42,
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJmMjNaSUU4R0FHTmhOT3dibTJDYk53In0.rTLCMx9WtdQDHAJOYW19Nlh_1yOH94UR5yabjk_9BFM",
+      "username": "alice"
+    },
+    {
+      "expect": "token_expired",
+      "name": "expired",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjcsInVzZXJuYW1lIjoiZXhwaXJlZF91c2VyIiwibmFtZSI6Iui_h-acn-eUqOaItyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNjk5OTk2NDAwLCJqdGkiOiJtb1hsLU9RMkxTaDVCaEhSdTZqcndnIn0.-ltgDOvYGDiqnxwxPEVfX5jVg1QvF0l37T_kYkCNzvc"
+    },
+    {
+      "expect": "bad_signature",
+      "name": "wrong_secret",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJhWW5MYUlBUlI0MVdOZ1ROeTcxSE5BIn0.GlNnMWrfuFmDw09y7no3Tu6EHq947enklqyhGYKGuWg"
+    },
+    {
+      "expect": "bad_signature",
+      "name": "tampered_payload",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjk5OSwidXNlcm5hbWUiOiJhbGljZSIsIm5hbWUiOiLpmL_kvJ8iLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMCwianRpIjoidGFtcGVyZWQifQ.rTLCMx9WtdQDHAJOYW19Nlh_1yOH94UR5yabjk_9BFM"
+    },
+    {
+      "expect": "bad_algorithm",
+      "name": "alg_none",
+      "token": "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOjk5OSwidXNlcm5hbWUiOiJhbGljZSIsIm5hbWUiOiLpmL_kvJ8iLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMCwianRpIjoidGFtcGVyZWQifQ."
+    },
+    {
+      "expect": "bad_type",
+      "name": "wrong_type",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEsInVzZXJuYW1lIjoiYm9iIiwibmFtZSI6IuWwj-aYjiIsInR5cCI6InJlZnJlc2giLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMCwianRpIjoid3Jvbmd0eXBlIn0.dy2ZFpX9ir0sxHbOKnR74cdk2_mpcmorp_3ZgoM9dJ8"
+    },
+    {
+      "expect": "malformed",
+      "name": "malformed",
+      "token": "only.two"
+    },
+    {
+      "expect": "malformed",
+      "name": "empty",
+      "token": ""
+    }
+  ],
+  "now": 1700000000,
+  "secret": "0123456789abcdef0123456789abcdef"
+}

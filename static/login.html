@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · 影音视界</title>
+<style>
+    :root {
+        --bg: #09090b;
+        --surface: #18181b;
+        --surface-raised: #1f1f23;
+        --orange: #f97316;
+        --orange-hover: #ea580c;
+        --orange-soft: rgba(249, 115, 22, 0.12);
+        --text: #f4f4f5;
+        --text-secondary: #a1a1aa;
+        --text-muted: #71717a;
+        --border: #27272a;
+        --danger: #ef4444;
+        --radius: 1rem;
+        --radius-xl: 2rem;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        min-height: 100vh;
+        background: var(--bg);
+        background-image: radial-gradient(ellipse at 50% 0%, rgba(249, 115, 22, 0.06) 0%, transparent 60%);
+        font-family: 'SF Pro Display', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        -webkit-font-smoothing: antialiased;
+    }
+    .card {
+        width: 100%;
+        max-width: 380px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        padding: 2rem 1.8rem 1.6rem;
+        box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.04), 0 30px 60px rgba(0, 0, 0, 0.5);
+    }
+    .brand {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        margin-bottom: 0.4rem;
+    }
+    .dot {
+        width: 7px; height: 7px; border-radius: 50%;
+        background: var(--orange);
+        box-shadow: 0 0 8px rgba(249, 115, 22, 0.25);
+        animation: pulse 2s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: .3s; }
+    h1 { font-size: 1.1rem; font-weight: 600; letter-spacing: .02em; margin: 0 0.3rem; }
+    h1 span { color: var(--orange); }
+    .subtitle {
+        text-align: center;
+        color: var(--text-muted);
+        font-size: 0.8rem;
+        margin-bottom: 1.4rem;
+    }
+    @keyframes pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: .4; transform: scale(.7); }
+    }
+
+    .tabs {
+        display: flex;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-xl);
+        padding: 4px;
+        margin-bottom: 1.3rem;
+    }
+    .tab {
+        flex: 1;
+        padding: 0.55rem 0;
+        border: none;
+        background: transparent;
+        color: var(--text-secondary);
+        font-size: 0.85rem;
+        font-weight: 500;
+        border-radius: var(--radius-xl);
+        cursor: pointer;
+        transition: all .2s ease;
+        font-family: inherit;
+    }
+    .tab.active {
+        background: var(--orange);
+        color: #fff;
+        font-weight: 600;
+    }
+
+    .field { margin-bottom: 0.9rem; }
+    .field label {
+        display: block;
+        font-size: 0.78rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.35rem;
+    }
+    .field input {
+        width: 100%;
+        padding: 0.65rem 0.9rem;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 0.7rem;
+        color: var(--text);
+        font-size: 0.9rem;
+        outline: none;
+        transition: border-color .2s, box-shadow .2s;
+        font-family: inherit;
+    }
+    .field input:focus {
+        border-color: var(--orange);
+        box-shadow: 0 0 0 3px var(--orange-soft);
+    }
+    .field input::placeholder { color: var(--text-muted); }
+    .field .hint { font-size: 0.7rem; color: var(--text-muted); margin-top: 0.3rem; }
+
+    .submit {
+        width: 100%;
+        margin-top: 0.4rem;
+        padding: 0.75rem;
+        border: 1px solid var(--orange);
+        border-radius: 0.8rem;
+        background: var(--orange);
+        color: #fff;
+        font-size: 0.9rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all .2s ease;
+        font-family: inherit;
+    }
+    .submit:hover:not(:disabled) { background: var(--orange-hover); box-shadow: 0 4px 14px rgba(249,115,22,.2); }
+    .submit:disabled { opacity: .5; cursor: not-allowed; }
+
+    .msg {
+        margin-top: 0.9rem;
+        font-size: 0.8rem;
+        text-align: center;
+        min-height: 1.2em;
+        color: var(--text-muted);
+        line-height: 1.4;
+    }
+    .msg.error { color: #fca5a5; }
+    .msg.ok { color: #a3e635; }
+
+    .foot {
+        margin-top: 1.2rem;
+        text-align: center;
+        font-size: 0.7rem;
+        color: var(--text-muted);
+        line-height: 1.5;
+    }
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="brand">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+        <h1>影音<span>视界</span></h1>
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>
+    <div class="subtitle">登录后即可创建或加入房间</div>
+
+    <div class="tabs">
+        <button class="tab active" id="tabLogin" type="button">登录</button>
+        <button class="tab" id="tabRegister" type="button">注册</button>
+    </div>
+
+    <form id="form" autocomplete="on">
+        <div class="field">
+            <label for="username">用户名</label>
+            <input id="username" name="username" type="text" placeholder="3~32 位小写字母、数字或下划线"
+                   autocomplete="username" autocapitalize="none" spellcheck="false">
+            <div class="hint" id="usernameHint" style="display:none">注册后用户名不可修改</div>
+        </div>
+
+        <div class="field">
+            <label for="password">密码</label>
+            <input id="password" name="password" type="password" placeholder="至少 8 位，不能是纯数字"
+                   autocomplete="current-password">
+        </div>
+
+        <div class="field" id="displayNameField" style="display:none">
+            <label for="displayName">显示名（可选）</label>
+            <input id="displayName" name="displayName" type="text" placeholder="通话中对方看到的名字，可填中文"
+                   autocomplete="nickname">
+        </div>
+
+        <button class="submit" id="submitBtn" type="submit">登录</button>
+    </form>
+
+    <div class="msg" id="msg"></div>
+
+    <div class="foot">
+        密码用 bcrypt 加盐哈希存储<br>
+        登录凭证 2 小时过期，刷新页面会自动续期
+    </div>
+</div>
+
+<script src="js/auth.js"></script>
+<script>
+(function () {
+    'use strict';
+
+    var $ = function (id) { return document.getElementById(id); };
+    var mode = 'login';       // 'login' | 'register'
+
+    function setMsg(text, kind) {
+        var el = $('msg');
+        el.textContent = text || '';
+        el.className = 'msg' + (kind ? ' ' + kind : '');
+    }
+
+    function setMode(next) {
+        mode = next;
+        var isLogin = next === 'login';
+        $('tabLogin').className = 'tab' + (isLogin ? ' active' : '');
+        $('tabRegister').className = 'tab' + (isLogin ? '' : ' active');
+        $('displayNameField').style.display = isLogin ? 'none' : '';
+        $('usernameHint').style.display = isLogin ? 'none' : '';
+        $('password').setAttribute('autocomplete', isLogin ? 'current-password' : 'new-password');
+        $('submitBtn').textContent = isLogin ? '登录' : '注册并登录';
+        setMsg('');
+    }
+
+    function setBusy(busy) {
+        $('submitBtn').disabled = busy;
+        $('submitBtn').textContent = busy
+            ? (mode === 'login' ? '登录中…' : '注册中…')
+            : (mode === 'login' ? '登录' : '注册并登录');
+    }
+
+    $('tabLogin').onclick = function () { setMode('login'); };
+    $('tabRegister').onclick = function () { setMode('register'); };
+
+    $('form').onsubmit = function (ev) {
+        ev.preventDefault();
+        setMsg('');
+
+        var username = $('username').value.trim();
+        var password = $('password').value;
+        var displayName = $('displayName').value.trim();
+
+        if (!username) { setMsg('请输入用户名', 'error'); return; }
+        if (!password) { setMsg('请输入密码', 'error'); return; }
+
+        setBusy(true);
+
+        var p = (mode === 'login')
+            ? Auth.login(username, password)
+            : Auth.register(username, password, displayName);
+
+        p.then(function (r) {
+            if (r.ok) {
+                setMsg('成功，正在进入…', 'ok');
+                location.replace('index.html');
+                return;
+            }
+            setBusy(false);
+            setMsg(r.error.message || '操作失败', 'error');
+        }, function () {
+            setBusy(false);
+            setMsg('网络异常，请稍后重试', 'error');
+        });
+    };
+
+    // 已经登录过（Cookie 仍有效）就直接进房间页
+    Auth.ensureSession().then(function (ok) {
+        if (ok) location.replace('index.html');
+    });
+})();
+</script>
+</body>
+</html>
