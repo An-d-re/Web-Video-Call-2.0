@@ -30,6 +30,7 @@
 | `jwt_verify.h` / `jwt_verify.cpp` | JWT（HS256）验签，只依赖 OpenSSL + jsoncpp，不依赖 muduo |
 | `tests/jwt_selftest.cpp` | JWT 验签的跨语言自检程序（对照 Go 生成的向量） |
 | `tests/jwt_vectors.json` | 由 `auth/vectors_test.go` 生成，勿手改 |
+| `tools/dev-gateway/` | 本地开发网关（静态托管 + `/api` 反代 + 假信令），仅本地用 |
 | `auth/` | 认证服务（Go + PostgreSQL）：注册/登录/刷新/登出 |
 | `db/` | 数据库迁移脚本 |
 | `static/index.html` | 前端单页（内联 CSS/JS），含 WebRTC 协商、房间 UI |
@@ -129,7 +130,17 @@ psql -U postgres -c 'CREATE DATABASE webrtc'
 DATABASE_URL='postgres://postgres@127.0.0.1:5432/webrtc?sslmode=disable' ./db/migrate.sh
 ```
 
-接口：`POST /api/register|login|refresh|logout`、`GET /api/me|health`。
+接口：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/register` `/api/login` `/api/refresh` `/api/logout` | 账号 |
+| GET | `/api/me` `/api/health` | 当前用户 / 健康检查 |
+| POST | `/api/rooms` `{title, password?}` | 建房（房间号由服务端生成），返回 `roomToken` |
+| POST | `/api/rooms/{id}/join` `{password?}` | 加入（校验密码 + 记录成员），返回 `roomToken` |
+| GET | `/api/rooms` | 全部房间 |
+| GET | `/api/rooms/mine` | 我加入过的房间 |
+| DELETE | `/api/rooms/{id}` | 解散（仅创建者） |
 
 测试：
 
@@ -169,6 +180,36 @@ export COOKIE_SECURE=false
    ▼
 退出登录：POST /api/logout（作废刷新令牌）→ 回登录页
 ```
+
+## 本地开发（没有服务器时）
+
+`tools/dev-gateway/` 用一个端口模拟 nginx + 信令服务，用于在拿不到服务器时验证前端流程：
+
+```
+http://127.0.0.1:8890
+  ├── /            托管 static/
+  ├── /api/*       反代到 Go auth 服务（真数据库、真令牌）
+  └── /ws          假信令：实现 auth / auth_ok / join_room / joined / start_call / error
+```
+
+**它只实现协议，不实现媒体**；等服务器可用时换成真的 C++ 服务，前端一行都不用改。
+
+```bash
+# 前置：PostgreSQL 已启动、已迁移，auth 服务已在 8080 运行
+cd tools/dev-gateway
+npm install
+# 设置 JWT_SECRET（与 auth 服务相同）
+node server.js
+# 浏览器打开 http://127.0.0.1:8890/login.html
+```
+
+自动自检（22 项：注册/登录/刷新轮换/Cookie 属性/WS 鉴权/超时/篡改令牌/登出）：
+
+```bash
+node e2e-test.js
+```
+
+> 假信令也校验 JWT 签名（这是 Node 实现的第三份验签），能和 Go、C++ 两方三方对照。
 
 ## 配置
 
@@ -290,8 +331,9 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 
 | type | 载荷 | 说明 |
 |---|---|---|
-| **`auth`** | `{token}` | **建连后必须发的第一条消息**。5 秒内不发会被断开 |
-| `join_room` | `{roomId}` | 请求入房。同一连接重复 join 同一房间是幂等的。**需先鉴权** |
+| `auth` | `{token}` | **建连后必须发的第一条消息**。5 秒内不发会被断开 |
+| `join_room` | `{roomToken}` | 用 auth 服务签发的**进房凭证**入房。信令服务只验签取 roomId，不查数据库 |
+| `list_rooms` | `{}` | 拉实时房间列表（只含当前有人的房间，用于侧栏在线人数） |
 | `offer` | `{data}` | 转发的 SDP Offer |
 | `answer` | `{data}` | 转发的 SDP Answer |
 | `ice` | `{data}` | 转发的 ICE 候选 |
@@ -304,7 +346,8 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | type | 载荷 | 说明 |
 |---|---|---|
 | **`auth_ok`** | `{userId, username, displayName}` | 鉴权成功，之后才能 `join_room` |
-| `joined` | `{roomId, peers, self}` | 入房成功应答。**客户端只有收到它才认为真的在房间里**。`self` 是本端身份 |
+| `joined` | `{roomId, peers, inCall, self}` | 入房成功应答。**客户端只有收到它才认为真的在房间里**。`peers` 当前人数、`inCall=true` 表示房间已满（通话进行中，别把状态打回"等待对方"）、`self` 是本端身份 |
+| `live_rooms` | `{rooms: [{roomId, peers}]}` | 对 `list_rooms` 的应答。只有实时人数，房间标题/密码在 auth 服务 |
 | `start_call` | `{initiator, peer, iceServers?}` | 房间已满，通话开始。`initiator=true` 的一方在重协商冲突中不让步（impolite）；`peer` 是对端身份 `{userId, username, displayName}` |
 | `offer` / `answer` / `ice` | 原样 | 转发自对端 |
 | `video_mute` / `mic_mute` | 原样 | 转发自对端 |
@@ -317,18 +360,24 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | code | 触发场景 |
 |---|---|
 | `room_full` | 房间已有 2 人 |
-| `unauthorized` | 未鉴权就发 `join_room` |
+| `unauthorized` | 未鉴权就发 `join_room` / `list_rooms` |
 | `invalid_token` | `auth` 的 token 签名错误 / 已过期 / 类型不对 |
+| `invalid_room_token` | `join_room` 携带的进房凭证无效或已过期（有效期 2 分钟），客户端应重新向 auth 换取 |
 | `auth_timeout` | 建连后 5 秒内没有发送 `auth`，连接被关闭 |
 | `auth_unavailable` | 服务端未配置 `JWT_SECRET` |
+
+> 房间不存在、密码错误、房间号被占用等**属于 auth 服务的 HTTP 错误码**（`room_not_found` / `bad_password` / `too_many_attempts` / `not_owner`），不出现在 WS 协议里——因为信令服务根本不知道房间是否存在。
 
 ### 房间语义（实现为准）
 
 - 一个房间最多 2 条连接；第 3 条会被 `room_full` 拒绝。
-- `start_call` 只在房间**刚好凑满 2 人**时发出，双方各收到一条（`initiator` 相反）。
-- `bye` 会结束通话并让发起方**让出房间里的座位**，但不断开 WebSocket；房间对象保留给仍在房间里的对端继续等新对端。这是刻意的设计（见 `CONTEXT.md` 的「挂断」）：挂断只结束这一次通话，不销毁房间。发起方若想重新配对，再发一次 `join_room` 即可。
-- 一条连接同一时刻只属于一个房间；换房时会自动从旧房间摘除并通知旧对端 `bye`。
-- 房间是**纯内存**状态，没有任何持久化；服务重启 = 所有房间消失。
+- **房间的权威数据在 PostgreSQL**：是否存在、标题、密码、谁加入过。
+  信令服务只维护"谁现在连着"，不判断房间是否存在、也不校验密码。
+- **进房流程**：客户端先 `POST /api/rooms/{id}/join`（带密码）→ auth 校验并签发 **2 分钟有效**的 `roomToken`
+  → 客户端用 `join_room {roomToken}` 入房。凭证过期会收到 `invalid_room_token`，前端会自动重新换取。
+- **挂断 = 结束通话 + 离开房间**；房间本身留在数据库里，随时可以再进去。
+- 内存里的房间（运行时状态）在最后一个人离开时立即回收；数据库里的房间永久保留，创建者可以解散。
+- 一条连接同一时刻只属于一个房间；换房时会自动从旧房间摘除并通知旧对端。
 
 ## 前端行为要点
 
@@ -341,10 +390,10 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 ## 已知限制
 
 - **信令层已要求登录**：`join_room` 之前必须先发 `auth`（HS256 JWT），未认证连接 5 秒后被断开。
-  这顺带收紧了 TURN 凭据的暴露面——`iceServers` 只在 `start_call` 里下发，而进入 `start_call` 需要有效账号。
-  仍是待办：**限流**（登录接口已有，WS 侧还没有）与**房间号改为服务端生成**。
-- **房间号在客户端生成**，理论上会和已存在的房间撞号（撞上就会加入别人的房间）。
-- **房间状态在单进程内存里**：无法水平扩容，重启即丢。
+  进房还要再换一张 `roomToken`（由 auth 服务在校验房间与密码后签发），信令服务只验签。
+  仍是待办：**WS 侧限流**（登录接口已有）。
+- **房间元数据已持久化**（PostgreSQL），但**实时连接仍在单进程内存里**：信令服务本身还不能水平扩容（见 `docs/ha-scaling-design.md`）。
+- **房间口令是短口令**（4~8 位）+ sha256 加盐，抗离线爆破能力有限；它的定位是"防误入"，账号密码才用 bcrypt。
 - **TURN 凭据是静态的**，且会下发给每个客户端，等同于公开信息。想避免被白用中继，改用 coturn 的 `use-auth-secret` + REST 临时凭据即可（`deploy_turn.sh` 末尾有说明）：凭据几十秒后过期，公开也无所谓，且不需要引入任何用户系统。
 - 渲染层只做了默认摄像头/麦克风，没有设备选择、屏幕共享、文字聊天、通话质量统计（`getStats`）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。

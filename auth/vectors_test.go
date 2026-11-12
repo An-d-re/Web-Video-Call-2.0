@@ -73,6 +73,12 @@ func TestWriteJwtVectors(t *testing.T) {
 	refreshInput := jwtHeader + "." + base64.RawURLEncoding.EncodeToString(refreshBody)
 	wrongType := refreshInput + "." + base64.RawURLEncoding.EncodeToString(signHS256(secretBytes, refreshInput))
 
+	// room 类型令牌（进房通行证），用于验证类型隔离
+	roomToken, err := signRoomToken(secretBytes, 42, "alice", "ABC234", 2*time.Minute, now)
+	if err != nil {
+		t.Fatalf("签发 room 令牌失败: %v", err)
+	}
+
 	cases := []map[string]any{
 		{
 			"name": "valid", "token": valid, "expect": "ok",
@@ -85,6 +91,14 @@ func TestWriteJwtVectors(t *testing.T) {
 		{"name": "wrong_type", "token": wrongType, "expect": "bad_type"},
 		{"name": "malformed", "token": "only.two", "expect": "malformed"},
 		{"name": "empty", "token": "", "expect": "malformed"},
+
+		// 类型隔离：room 令牌按 room 验签应通过，按 access 验签必须失败
+		{
+			"name": "room_token_valid", "token": roomToken, "expect": "ok", "expectTyp": "room",
+			"sub": 42, "username": "alice", "room": "ABC234",
+		},
+		{"name": "room_token_as_access", "token": roomToken, "expect": "bad_type", "expectTyp": "access"},
+		{"name": "access_token_as_room", "token": valid, "expect": "bad_type", "expectTyp": "room"},
 	}
 
 	doc := map[string]any{

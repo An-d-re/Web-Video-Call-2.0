@@ -19,24 +19,26 @@ var errNoToken = errors.New("缺少或非法的 Authorization 头")
 
 // Server 持有所有依赖，方便测试时按需替换。
 type Server struct {
-	cfg         *Config
-	pool        *pgxpool.Pool
-	store       *Store
-	loginIP     *Limiter // 按来源 IP 限制登录尝试
-	loginByUser *Limiter // 按用户名限制登录尝试（防单账号被爆破）
-	registerIP  *Limiter
-	startedAt   time.Time
+	cfg          *Config
+	pool         *pgxpool.Pool
+	store        *Store
+	loginIP      *Limiter // 按来源 IP 限制登录尝试
+	loginByUser  *Limiter // 按用户名限制登录尝试（防单账号被爆破）
+	registerIP   *Limiter
+	roomPwdFails *pwdFailCounter // 房间口令失败计数（防爆破）
+	startedAt    time.Time
 }
 
 func NewServer(cfg *Config, pool *pgxpool.Pool) *Server {
 	return &Server{
-		cfg:         cfg,
-		pool:        pool,
-		store:       NewStore(pool),
-		loginIP:     NewLimiter(20, 20), // 每分钟 20 次，允许 20 的突发
-		loginByUser: NewLimiter(5, 5),   // 单账号每分钟 5 次
-		registerIP:  NewLimiter(5, 3),   // 单 IP 每分钟 5 次注册，突发 3
-		startedAt:   time.Now(),
+		cfg:          cfg,
+		pool:         pool,
+		store:        NewStore(pool),
+		loginIP:      NewLimiter(20, 20), // 每分钟 20 次，允许 20 的突发
+		loginByUser:  NewLimiter(5, 5),   // 单账号每分钟 5 次
+		registerIP:   NewLimiter(5, 3),   // 单 IP 每分钟 5 次注册，突发 3
+		roomPwdFails: newPwdFailCounter(),
+		startedAt:    time.Now(),
 	}
 }
 
@@ -49,6 +51,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+
+	// 房间（权威数据在 PostgreSQL，信令服务只认 roomToken）
+	mux.HandleFunc("POST /api/rooms", s.handleRoomCreate)
+	mux.HandleFunc("GET /api/rooms", s.handleRoomList)
+	mux.HandleFunc("GET /api/rooms/mine", s.handleRoomMine)
+	mux.HandleFunc("POST /api/rooms/{id}/join", s.handleRoomJoin)
+	mux.HandleFunc("DELETE /api/rooms/{id}", s.handleRoomDelete)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_found", "接口不存在")
 	})

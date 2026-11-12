@@ -187,7 +187,7 @@ simulcast 层切换、拥塞控制、DTLS/SRTP 终结……这是**另一个数�
 | `unsubscribe` | `{peerId, kind}` | 取消订阅（tile 不可见时） |
 | `set_preferred_layers` | `{peerId, spatial, temporal}` | 按 tile 大小/带宽切层 |
 | `offer/answer/ice` | `{data}` | 与 SFU 的协商 |
-| `bye` | `{}` | 结束通话，保留房间（沿用你已有的语义） |
+| `bye` | `{}` | 结束通话并离开房间（当前一对一语义；多人化时要拆开，见 §4.3 末尾） |
 
 **服务端 → 客户端**
 
@@ -200,8 +200,9 @@ simulcast 层切换、拥塞控制、DTLS/SRTP 终结……这是**另一个数�
 | `offer/answer/ice` | `{data}` | SFU 侧协商 |
 | `error` | `{code, message}` | `room_full` / `no_capacity` / `publish_denied` |
 
-> 注意 `bye` 与 `leave_room` 的区分——你现有的"挂断保留房间"领域模型在多人场景下依然成立且有用：
-> 100 人房间里某人只是结束自己的通话，房间不该解散。这正好延续 `CONTEXT.md` 的设计。
+> 注意 `bye` 与 `leave_room` 的区分——当前一对一版本里**挂断就等于离开房间**（房间是持久的，不靠"人还在里面"存活）。
+> 到了多人场景，这个语义要再拆开：某人只是结束自己的通话，不该把整个房间的人赶走。届时应恢复
+> `leave_room` 作为独立消息，并让 `bye` 只影响本端媒体。这是多人化时**必须回改**的一处。
 
 ### 4.4 发布权限必须在服务端
 
@@ -274,7 +275,8 @@ SFU:   浏览器A ←─SRTP─→ SFU ←─SRTP─→ 浏览器B       SFU 能
 | 未开启设备 | 无 track | 无 producer |
 | 已关闭设备（设备仍占用） | `track.enabled = false` | **`producer.pause()`**（客户端仍持有设备，服务端停转发） |
 | 开启设备 | track enabled | producer active |
-| 挂断（保留房间） | 摘掉座位、房间保留 | `bye` 结束自己的通话，`leave_room` 才离开房间 |
+| 挂断 | **结束通话 + 离开房间**（房间持久存在） | 建议改为：`bye` 只结束本端媒体，`leave_room` 才离开房间——否则一人挂断会打断整场 |
+| 房间存在性 | PostgreSQL（`rooms` 表），由 auth 服务校验并签发 `roomToken` | 同样适用：多人房间更需要在库里持久化容量/权限 |
 | 响应方让步（perfect negotiation） | 对端浏览器 | 与 SFU 协商时同样适用（多数实现是客户端 offer / SFU answer，订阅变化时 SFU 侧可发起 offer，具体看所选 SFU 文档） |
 | 对方已关闭摄像头 | `video_mute` 消息 | `peer_track{state:"paused"}`，按 peerId 维护一张表 |
 

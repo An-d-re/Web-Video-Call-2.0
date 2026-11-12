@@ -76,25 +76,32 @@ int main(int argc, char** argv) {
         const std::string name = c["name"].asString();
         const std::string token = c["token"].asString();
         const std::string expect = c["expect"].asString();
+        // 每个用例声明要按哪种类型验签（access / room），默认 access
+        const std::string expectTyp = c.get("expectTyp", "access").asString();
 
         jwt::Claims claims;
-        const std::string got = jwt::Verify(token, secret, now, &claims);
+        const std::string got = jwt::Verify(token, secret, expectTyp, now, &claims);
 
         bool ok = (got == expect);
         std::string detail;
 
         // 通过用例还要核对载荷字段，确保不是"返回 ok 但内容错了"
         if (ok && expect == "ok") {
-            const int64_t wantSub = c["sub"].asInt64();
-            const std::string wantUser = c["username"].asString();
-            const std::string wantName = c["displayName"].asString();
-            if (claims.sub != wantSub || claims.username != wantUser ||
-                claims.displayName != wantName) {
+            const int64_t wantSub = c.get("sub", 0).asInt64();
+            const std::string wantUser = c.get("username", "").asString();
+            const std::string wantName = c.get("displayName", "").asString();
+            const std::string wantRoom = c.get("room", "").asString();
+
+            if ((wantSub != 0 && claims.sub != wantSub) ||
+                (!wantUser.empty() && claims.username != wantUser) ||
+                (!wantName.empty() && claims.displayName != wantName) ||
+                (!wantRoom.empty() && claims.room != wantRoom)) {
                 ok = false;
                 std::ostringstream ss;
                 ss << "载荷不符: sub=" << claims.sub
                    << " username=" << claims.username
-                   << " displayName=" << claims.displayName;
+                   << " displayName=" << claims.displayName
+                   << " room=" << claims.room;
                 detail = ss.str();
             }
         }

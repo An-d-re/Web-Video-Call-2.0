@@ -344,6 +344,18 @@
             transform: translateY(-1px);
         }
 
+        .btn-leave {
+            padding: 0.7rem 1.6rem;
+            border-radius: var(--radius);
+            background: var(--surface-raised);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            font-weight: 500;
+            font-size: 0.9rem;
+            justify-content: center;
+        }
+        .btn-leave:hover:not(:disabled) { border-color: var(--danger); color: #fca5a5; }
+
         /* ===== Status Area ===== */
         .status-area { text-align: center; }
         .status-badge {
@@ -401,9 +413,252 @@
         }
         .btn-logout:hover { border-color: var(--danger); color: #fca5a5; }
 
+        /* ===== Layout: Sidebar + Main ===== */
+        /* 覆盖 body 原来的居中布局：现在左栏 + 右侧主区 */
+        body { display: block; padding: 0; }
+        .app { display: flex; width: 100%; min-height: 100vh; }
+        .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 28px; min-width: 0; }
+
+        .sidebar {
+            width: 288px;
+            flex: 0 0 288px;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        .sidebar-head {
+            padding: 1rem 0.9rem 0.7rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 0.7rem;
+        }
+        .sidebar-title h2 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            color: var(--text);
+            letter-spacing: 0.02em;
+        }
+        .btn-new {
+            border: 1px solid var(--orange);
+            background: var(--orange);
+            color: #fff;
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 0.32rem 0.7rem;
+            border-radius: var(--radius-xl);
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s ease;
+            white-space: nowrap;
+        }
+        .btn-new:hover { background: var(--orange-hover); border-color: var(--orange-hover); }
+
+        .side-tabs { display: flex; gap: 0.35rem; }
+        .side-tab {
+            flex: 1;
+            padding: 0.4rem 0;
+            font-size: 0.78rem;
+            color: var(--text-secondary);
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-xl);
+            cursor: pointer;
+            font-family: inherit;
+            transition: all .2s ease;
+        }
+        .side-tab.active {
+            background: var(--orange-soft);
+            border-color: rgba(249, 115, 22, 0.5);
+            color: var(--orange);
+            font-weight: 600;
+        }
+
+        .room-list {
+            list-style: none;
+            overflow-y: auto;
+            flex: 1;
+            padding: 0.6rem 0.6rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.45rem;
+        }
+        .room-item {
+            padding: 0.6rem 0.7rem;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--bg);
+            cursor: pointer;
+            transition: border-color .2s, background .2s;
+        }
+        .room-item:hover { border-color: var(--orange); background: var(--surface-hover); }
+        .room-item-head {
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            margin-bottom: 0.25rem;
+        }
+        .room-item-title {
+            font-size: 0.84rem;
+            font-weight: 600;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .room-lock { font-size: 0.75rem; flex-shrink: 0; }
+        /* 解散按钮：只对创建者显示，压在标题右侧 */
+        .room-del {
+            flex-shrink: 0;
+            width: 18px;
+            height: 18px;
+            padding: 0;
+            line-height: 1;
+            border-radius: 50%;
+            border: 1px solid var(--border);
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            font-family: inherit;
+            cursor: pointer;
+            transition: all .2s ease;
+        }
+        .room-del:hover {
+            border-color: var(--danger);
+            color: #fca5a5;
+            background: rgba(239, 68, 68, .12);
+        }
+        .room-item-meta {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .room-item.live { border-color: rgba(163, 230, 53, 0.35); }
+        .room-empty {
+            padding: 1.2rem 0.8rem;
+            text-align: center;
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .sidebar-toggle { display: none; }
+
+        /* ===== Modal ===== */
+        .modal-mask {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.65);
+            backdrop-filter: blur(3px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            padding: 20px;
+        }
+        .modal-mask.show { display: flex; }
+        .modal {
+            width: 100%;
+            max-width: 360px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 1.4rem 1.3rem 1.2rem;
+            box-shadow: 0 30px 60px rgba(0, 0, 0, 0.6);
+        }
+        .modal h3 { font-size: 0.95rem; margin-bottom: 0.9rem; color: var(--text); }
+        .modal label {
+            display: block;
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            margin: 0.6rem 0 0.3rem;
+        }
+        .modal input {
+            width: 100%;
+            padding: 0.55rem 0.8rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 0.6rem;
+            color: var(--text);
+            font-size: 0.85rem;
+            outline: none;
+            font-family: inherit;
+        }
+        .modal input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-soft); }
+        .modal .hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .modal-msg {
+            min-height: 1.1em;
+            font-size: 0.75rem;
+            color: #fca5a5;
+            margin-top: 0.6rem;
+            line-height: 1.4;
+        }
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.6rem;
+            margin-top: 1rem;
+        }
+        .modal-actions button {
+            padding: 0.5rem 1.1rem;
+            border-radius: 0.7rem;
+            font-size: 0.82rem;
+            cursor: pointer;
+            font-family: inherit;
+            border: 1px solid var(--border);
+            background: var(--surface-raised);
+            color: var(--text);
+            transition: all .2s ease;
+        }
+        .modal-actions .primary {
+            background: var(--orange);
+            border-color: var(--orange);
+            color: #fff;
+            font-weight: 600;
+        }
+        .modal-actions .primary:hover:not(:disabled) { background: var(--orange-hover); }
+        .modal-actions button:disabled { opacity: .5; cursor: not-allowed; }
+
         /* ===== Responsive ===== */
+        @media (max-width: 900px) {
+            .sidebar {
+                position: fixed;
+                left: 0; top: 0; bottom: 0;
+                z-index: 60;
+                transform: translateX(-100%);
+                transition: transform .25s ease;
+                box-shadow: 0 0 40px rgba(0, 0, 0, 0.6);
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-toggle {
+                display: inline-flex;
+                position: fixed;
+                left: 12px; top: 12px;
+                z-index: 70;
+                align-items: center;
+                gap: 0.3rem;
+                padding: 0.45rem 0.85rem;
+                font-size: 0.78rem;
+                border-radius: var(--radius-xl);
+                background: var(--surface);
+                border: 1px solid var(--border);
+                color: var(--text);
+                cursor: pointer;
+                font-family: inherit;
+            }
+            .main { padding: 60px 12px 12px; }
+        }
+
         @media (max-width: 700px) {
-            body { padding: 12px; }
+            body { padding: 0; }
             .call-container { padding: 1.2rem 0.8rem 1rem; border-radius: var(--radius-lg); }
             .video-card { min-width: 100%; }
             .header h1 { font-size: 1rem; }
@@ -413,6 +668,24 @@
     </style>
 </head>
 <body>
+<button class="sidebar-toggle" id="sidebarToggle" type="button">☰ 房间</button>
+
+<div class="app">
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+        <div class="sidebar-title">
+            <h2>房间</h2>
+            <button class="btn-new" id="newRoomBtn" type="button">+ 新建</button>
+        </div>
+        <div class="side-tabs">
+            <button class="side-tab active" id="tabActive" type="button">活跃房间</button>
+            <button class="side-tab" id="tabMine" type="button">我的房间</button>
+        </div>
+    </div>
+    <ul class="room-list" id="roomList"></ul>
+</aside>
+
+<main class="main">
 <div class="call-container">
 
     <!-- User Bar -->
@@ -520,6 +793,7 @@
         </div>
         <div class="button-row">
             <button class="btn btn-hangup" id="hangupBtn" disabled>挂断</button>
+            <button class="btn btn-leave" id="leaveBtn" disabled>退出房间</button>
         </div>
     </div>
 
@@ -527,6 +801,39 @@
     <div class="status-area">
         <div class="status-badge" id="status">等待操作</div>
         <div class="ice-info" id="iceStatus">ICE 状态: 未连接</div>
+    </div>
+</div>
+</main>
+</div>
+
+<!-- 新建房间弹窗 -->
+<div class="modal-mask" id="createMask">
+    <div class="modal">
+        <h3>新建房间</h3>
+        <label for="newTitle">房间标题</label>
+        <input id="newTitle" type="text" maxlength="50" placeholder="例如：阿伟的会议室">
+        <label for="newPassword">房间密码（可选）</label>
+        <input id="newPassword" type="text" maxlength="8" placeholder="4~8 位字母或数字，留空表示不加密">
+        <div class="hint">有密码的房间会显示 🔒，别人加入时需要输入</div>
+        <div class="modal-msg" id="createMsg"></div>
+        <div class="modal-actions">
+            <button id="createCancel" type="button">取消</button>
+            <button class="primary" id="createConfirm" type="button">创建并进入</button>
+        </div>
+    </div>
+</div>
+
+<!-- 输入房间密码弹窗 -->
+<div class="modal-mask" id="pwdMask">
+    <div class="modal">
+        <h3 id="pwdTitle">该房间需要密码</h3>
+        <label for="pwdInput">房间密码</label>
+        <input id="pwdInput" type="text" maxlength="8" placeholder="请输入房间密码">
+        <div class="modal-msg" id="pwdMsg"></div>
+        <div class="modal-actions">
+            <button id="pwdCancel" type="button">取消</button>
+            <button class="primary" id="pwdConfirm" type="button">加入</button>
+        </div>
     </div>
 </div>
 
@@ -537,8 +844,11 @@
     let peerConn = null;
     let ws = null;
     let inCall = false;
-    let currentRoomId = null;   // 服务端已通过 joined 确认的房间
-    let pendingRoomId = null;   // 已发出 join_room、等待服务端确认的房间
+    let currentRoomId = null;       // 服务端已通过 joined 确认的房间号
+    let currentRoomTitle = '';      // 房间标题（来自 auth 服务）
+    let currentRoomPassword = '';   // 记住本次进房用的密码，重连时复用
+    let pendingRoomToken = null;    // 已拿到、待发给信令服务的进房凭证
+    let pendingRoomTitle = '';      // 待展示的房间标题
     let audioMuted = true;      // 初始未开启
     let videoMuted = true;      // 初始未开启
     let micStarted = false;     // 是否已获取过麦克风设备
@@ -656,17 +966,7 @@
         ws.send(JSON.stringify({ type: "mic_mute", muted: audioMuted, started: micStarted }));
     }
 
-    // ========== Room ==========
-    function generateRoomId() {
-        const array = new Uint32Array(6);
-        crypto.getRandomValues(array);
-        const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-        let id = '';
-        for (let i = 0; i < 6; i++) {
-            id += chars[array[i] % chars.length];
-        }
-        return id;
-    }
+    // 房间号现在由服务端生成（见 auth 服务的 generateRoomID），前端不再自己造号。
 
     // ========== WebRTC ==========
     function initPeerConnection() {
@@ -778,26 +1078,52 @@
             if (data.displayName) $('localLabel').textContent = data.displayName + '（我）';
             updateStatus("已登录，可以创建或加入房间");
 
-            // 鉴权通过后，才补发入房请求
-            if (pendingRoomId) {
-                sendJoinRoom(pendingRoomId);
+            // 鉴权通过后补发入房：
+            //  - 已有待发的进房凭证 → 直接发（首次入房的正常路径）
+            //  - 只是重连回来（凭证可能已过期）→ 重新向 auth 换一张
+            if (pendingRoomToken) {
+                sendJoinRoom();
             } else if (currentRoomId && !byeSent) {
-                sendJoinRoom(currentRoomId);
+                rejoinCurrentRoom();
             }
+
+            // 鉴权完成后开始刷新房间列表
+            startRoomPolling();
+            return;
+        }
+
+        if (data.type === "live_rooms") {
+            roomData.live = {};
+            const list = data.rooms || [];
+            for (let i = 0; i < list.length; i++) {
+                roomData.live[list[i].roomId] = list[i].peers || 0;
+            }
+            renderRoomList();
             return;
         }
 
         if (data.type === "joined") {
             // 服务端确认入房：到这一步才认为"真的在房间里"
-            currentRoomId = data.roomId || pendingRoomId;
-            pendingRoomId = null;
+            pendingRoomToken = null;
+            currentRoomId = data.roomId;
+            currentRoomTitle = pendingRoomTitle || currentRoomTitle;
+            pendingRoomTitle = '';
             byeSent = false;
-            setRoomStatus(currentRoomId);
+            setRoomStatus(currentRoomTitle, currentRoomId);
             if (data.self && data.self.displayName) {
                 $('localLabel').textContent = data.self.displayName + '（我）';
                 $('userName').textContent = data.self.displayName;
             }
-            updateStatus("已加入房间，等待对方...");
+            $('leaveBtn').disabled = false;
+
+            // 关键：inCall 表示房间里已经凑满 2 人（通话正在进行），
+            // 不能把状态打回"等待对方"。
+            if (data.inCall) {
+                updateStatus("通话中");
+            } else {
+                updateStatus("已加入房间，等待对方...");
+            }
+            refreshRooms();
             return;
         }
 
@@ -885,23 +1211,22 @@
             remoteMicStarted = data.started === true;
             updateRemoteUI();
         } else if (data.type === "bye") {
+            // 对方挂断/退出：只结束本次通话，自己仍然留在房间里等待
             byeSent = true;
-            hangup(false);
-            $('hangupBtn').disabled = true;
-            updateStatus("对方已挂断，继续等待新连接...");
-        } else if (data.type === "bye_ack") {
-            console.log("对方已确认挂断");
+            endCall();
+            $('leaveBtn').disabled = false;
+            updateStatus("对方已挂断，可以继续等待，或点「退出房间」离开");
+        } else if (data.type === "bye_ack" || data.type === "left_room") {
+            console.log("服务端已确认离开房间");
         } else if (data.type === "error") {
             // ---- 鉴权类错误：先尝试刷新令牌，失败则回登录页 ----
             if (data.code === "invalid_token" || data.code === "auth_timeout" ||
                 data.code === "unauthorized") {
                 authed = false;
                 updateStatus("登录状态已失效，正在重新鉴权…", true);
-                // 记住想去的房间，重新鉴权成功后自动补发
-                if (!pendingRoomId) pendingRoomId = currentRoomId;
                 Auth.refresh().then((ok) => {
                     if (ok && ws) {
-                        // 令牌换新了：直接在当前连接上重新鉴权
+                        // 令牌换新了：直接在当前连接上重新鉴权，auth_ok 后会自动补发入房
                         sendAuth();
                     } else {
                         gotoLogin();
@@ -910,11 +1235,16 @@
                 return;
             }
 
-            // ---- 其它错误 ----
-            if (pendingRoomId) {
-                pendingRoomId = null;
-                setRoomStatus(currentRoomId);
+            // ---- 进房凭证无效/过期：重新向 auth 换一张再试 ----
+            if (data.code === "invalid_room_token") {
+                pendingRoomToken = null;
+                updateStatus("进房凭证已过期，正在重新获取…", true);
+                rejoinCurrentRoom();
+                return;
             }
+
+            // ---- 其它错误 ----
+            pendingRoomToken = null;
             if (data.code === "room_full") {
                 updateStatus("房间已满（对方可能已断线，约 1 分钟后可重试）", true);
             } else {
@@ -923,10 +1253,31 @@
         }
     }
 
-    // ========== Hangup ==========
-    function hangup(isActive = true) {
-        if (!inCall && !peerConn) return;
-        const wasInCall = inCall;
+    // 重连或凭证过期时，重新向 auth 服务换取进房凭证
+    async function rejoinCurrentRoom() {
+        if (!currentRoomId) return;
+        const res = await Auth.apiFetch('/rooms/' + encodeURIComponent(currentRoomId) + '/join', {
+            method: 'POST',
+            body: { password: currentRoomPassword || '' },
+        });
+        if (res.status === 200) {
+            currentRoomTitle = res.data.room.title;
+            pendingRoomToken = res.data.roomToken;
+            pendingRoomTitle = currentRoomTitle;
+            sendJoinRoom();
+            return;
+        }
+        // 房间被解散 / 密码变了 / 没权限：清掉本地房间状态
+        const c = res.data && res.data.error && res.data.error.code;
+        if (c === 'room_not_found') updateStatus("房间已被解散", true);
+        else updateStatus(apiErr(res), true);
+        resetRoomUI();
+    }
+
+    // ========== 结束通话 / 退出房间 ==========
+
+    // 只结束媒体与通话状态，不动房间归属（收到对方 bye 时用）
+    function endCall() {
         inCall = false;
         isInitiator = false;
         if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
@@ -942,23 +1293,83 @@
         $('remoteCard').classList.remove('connected');
         document.title = "影音视界 · 房间视频通话";
 
-        // 挂断不改变本端设备状态，只重置远端的显示
+        // 结束通话不改变本端设备状态，只重置远端的显示
         remoteHasVideo = false;
         remoteVideoMuted = false;
         remoteMicMuted = false;
         remoteMicStarted = false;
         updateRemoteUI();
+    }
 
-        if (isActive && wasInCall && !byeSent) {
-            if (currentRoomId && ws && ws.readyState === WebSocket.OPEN) {
-                byeSent = true;
-                ws.send(JSON.stringify({ type: "bye" }));
-                updateStatus("已挂断，保持房间连接...");
-            } else {
-                updateStatus("已挂断");
-            }
+    // 清空本地房间状态（不动媒体）
+    function resetRoomUI() {
+        currentRoomId = null;
+        currentRoomTitle = '';
+        currentRoomPassword = '';
+        pendingRoomToken = null;
+        pendingRoomTitle = '';
+        byeSent = false;
+        setRoomStatus(null);
+        $('hangupBtn').disabled = true;
+        $('leaveBtn').disabled = true;
+        $('remoteLabel').textContent = '对方';
+        refreshRooms();
+    }
+
+    // 挂断：结束通话 + 离开房间（当前产品语义）
+    function hangup(isActive) {
+        const wasInCall = inCall || !!peerConn;
+        if (isActive !== false && !byeSent && currentRoomId &&
+            ws && ws.readyState === WebSocket.OPEN && authed) {
+            byeSent = true;
+            ws.send(JSON.stringify({ type: "bye" }));
+        }
+        endCall();
+        resetRoomUI();
+        updateStatus(wasInCall ? "已挂断，已退出房间" : "已退出房间");
+    }
+
+    // 退出房间：在房间里但没在通话时使用；通话中则等同挂断
+    function leaveRoom() {
+        if (inCall || peerConn) {
+            hangup(true);
+            return;
+        }
+        if (!byeSent && currentRoomId && ws && ws.readyState === WebSocket.OPEN && authed) {
+            byeSent = true;
+            ws.send(JSON.stringify({ type: "bye" }));
+        }
+        endCall();
+        resetRoomUI();
+        updateStatus("已退出房间");
+    }
+
+    // 解散房间：只有创建者能调，二次确认后删除。房间号与加入记录一并消失。
+    async function dissolveRoom(room) {
+        const msg = '确定解散房间「' + room.title + '」吗？\n\n解散后房间号和所有人的加入记录都会消失，无法恢复。';
+        if (!window.confirm(msg)) return;
+
+        // 自己正在这个房间里：先正常退出，让对端收到 bye 而不是被静默掐断
+        if (currentRoomId === room.id) {
+            leaveRoom();
+        }
+
+        const res = await Auth.apiFetch('/rooms/' + encodeURIComponent(room.id), { method: 'DELETE' });
+
+        if (res.status === 204) {
+            updateStatus('房间「' + room.title + '」已解散');
+            refreshRooms();
+            return;
+        }
+
+        const code = res.data && res.data.error && res.data.error.code;
+        if (code === 'not_owner') {
+            updateStatus('只有创建者可以解散房间', true);
+        } else if (code === 'room_not_found') {
+            updateStatus('房间已经不存在了', true);
+            refreshRooms();
         } else {
-            updateStatus("已挂断");
+            updateStatus(apiErr(res), true);
         }
     }
 
@@ -1045,14 +1456,15 @@
         }
     }
 
-    // 统一入口：把"我想在哪个房间"告诉服务端（是否真的进房以 joined 应答为准）
-    // 注意：必须先通过 auth 鉴权，否则服务端会回 unauthorized。
-    function sendJoinRoom(roomId) {
-        if (!roomId || !authed || !ws || ws.readyState !== WebSocket.OPEN) return false;
+    // 统一入口：把进房凭证发给信令服务。
+    // 注意：房间是否存在、密码对不对，都已经由 auth 服务校验过并签发进房凭证；
+    // 信令服务只验签取 roomId，所以这里只需要 roomToken。
+    function sendJoinRoom() {
+        if (!pendingRoomToken || !authed || !ws || ws.readyState !== WebSocket.OPEN) return false;
         try {
-            ws.send(JSON.stringify({ type: "join_room", roomId: roomId }));
+            ws.send(JSON.stringify({ type: "join_room", roomToken: pendingRoomToken }));
         } catch (e) {
-            pendingRoomId = null;
+            pendingRoomToken = null;
             updateStatus("加入房间失败: " + e.message, true);
             return false;
         }
@@ -1142,8 +1554,10 @@
             socket.onclose = () => {
                 if (ws === socket) ws = null;
                 if (wsDisconnectedIntentionally) return;
-                // 通话中掉线：先结束本次通话（socket 已关闭，不会发出 bye）
-                if (inCall) hangup();
+                // 通话中掉线：只结束媒体（socket 已关闭，发不出 bye）。
+                // 注意这里不能调用 hangup()——那会清掉房间状态，
+                // 重连回来后就没法自动回房了。
+                if (inCall) endCall();
                 scheduleReconnect();
             };
         }).finally(() => {
@@ -1163,54 +1577,304 @@
     }
 
     // ========== Room Operations ==========
-    function setRoomStatus(roomId) {
+    // 房间状态：标题（主）+ 房间号（等宽小字）。两者都没有则显示"未加入房间"。
+    function setRoomStatus(title, roomId) {
         const el = $('roomStatus');
-        if (!roomId) {
+        if (!title && !roomId) {
             el.textContent = '未加入房间';
             return;
         }
-        el.textContent = '当前房间: ';
-        const span = document.createElement('span');
-        span.className = 'room-id';
-        span.textContent = roomId;
-        el.appendChild(span);
+        el.textContent = title ? (title + '  ') : '当前房间: ';
+        if (roomId) {
+            const span = document.createElement('span');
+            span.className = 'room-id';
+            span.textContent = roomId;
+            el.appendChild(span);
+        }
     }
 
-    async function joinRoom(roomId) {
-        // 只记录"期望房间"，真正的 join_room 由 onopen 统一补发；
-        // 是否算加入成功以服务端返回的 joined 为准（见 handleSignaling）
-        pendingRoomId = roomId;
+    // ========== 房间：进入 / 创建 / 加入 / 列表 ==========
+
+    function apiErr(res) {
+        const e = res && res.data && res.data.error;
+        return (e && e.message) || ('请求失败（HTTP ' + (res ? res.status : '?') + '）');
+    }
+
+    // 拿到进房凭证后进入房间
+    async function enterRoom(roomToken, title) {
+        if (inCall) {
+            updateStatus("你正在通话中，请先挂断");
+            return;
+        }
+
+        pendingRoomToken = roomToken;
+        pendingRoomTitle = title || '';
         byeSent = false;
         remoteHasVideo = false;
         remoteVideoMuted = false;
         remoteMicMuted = false;
         remoteMicStarted = false;
         updateRemoteUI();
-        setRoomStatus(roomId);
+        setRoomStatus(pendingRoomTitle);
 
-        if (ws && ws.readyState === WebSocket.OPEN) {
-            sendJoinRoom(roomId);
+        if (ws && ws.readyState === WebSocket.OPEN && authed) {
+            sendJoinRoom();
             return;
         }
         updateStatus("正在连接服务器...");
         try {
             await connectWebSocket();
         } catch (e) {
-            pendingRoomId = null;
-            setRoomStatus(currentRoomId);
+            pendingRoomToken = null;
+            setRoomStatus(null);
             updateStatus("连接服务器失败，请检查网络", true);
         }
     }
 
-    async function createRoom() {
-        const roomId = generateRoomId();
-        await joinRoom(roomId);
-        try {
-            await navigator.clipboard.writeText(roomId);
-            alert(`房间号: ${roomId}\n已复制到剪贴板，请发送给朋友`);
-        } catch(e) {
-            alert(`房间号: ${roomId}\n请复制发送给朋友`);
+    // ---- 创建房间弹窗 ----
+    function openCreateModal() {
+        $('newTitle').value = '';
+        $('newPassword').value = '';
+        $('createMsg').textContent = '';
+        $('createMask').classList.add('show');
+        setTimeout(function () { $('newTitle').focus(); }, 50);
+    }
+    function closeCreateModal() {
+        $('createMask').classList.remove('show');
+    }
+
+    async function submitCreateRoom() {
+        const title = $('newTitle').value.trim();
+        const password = $('newPassword').value.trim();
+        if (!title) {
+            $('createMsg').textContent = '请填写房间标题';
+            return;
         }
+
+        const btn = $('createConfirm');
+        btn.disabled = true;
+        btn.textContent = '创建中…';
+
+        const res = await Auth.apiFetch('/rooms', {
+            method: 'POST',
+            body: { title: title, password: password },
+        });
+
+        btn.disabled = false;
+        btn.textContent = '创建并进入';
+
+        if (res.status === 201) {
+            closeCreateModal();
+            currentRoomPassword = password;
+            currentRoomTitle = res.data.room.title;
+            await enterRoom(res.data.roomToken, res.data.room.title);
+            refreshRooms();
+            return;
+        }
+        $('createMsg').textContent = apiErr(res);
+    }
+
+    // ---- 加入已存在的房间（从列表点进来）----
+    async function joinFromList(room) {
+        if (inCall) {
+            updateStatus("你正在通话中，请先挂断");
+            return;
+        }
+        let password = '';
+        if (room.hasPassword) {
+            password = await askPassword(room.title);
+            if (password === null) return;
+        }
+        await doJoin(room.id, password);
+    }
+
+    // ---- 通过房间号加入 ----
+    async function joinByCode(code) {
+        if (!/^[A-Z0-9]{4,16}$/.test(code)) {
+            updateStatus("房间号格式不对", true);
+            return;
+        }
+        // 先不带密码试一次；如果房间有密码，服务端会回 bad_password
+        const res = await Auth.apiFetch('/rooms/' + code + '/join', {
+            method: 'POST',
+            body: { password: '' },
+        });
+        if (res.status === 200) {
+            currentRoomPassword = '';
+            currentRoomTitle = res.data.room.title;
+            await enterRoom(res.data.roomToken, res.data.room.title);
+            refreshRooms();
+            return;
+        }
+        const c = res.data && res.data.error && res.data.error.code;
+        if (c === 'bad_password') {
+            const pw = await askPassword(code);
+            if (pw === null) return;
+            await doJoin(code, pw);
+            return;
+        }
+        if (c === 'room_not_found') {
+            updateStatus("房间不存在，请确认房间号", true);
+            return;
+        }
+        if (c === 'too_many_attempts') {
+            updateStatus("密码尝试次数过多，请稍后再试", true);
+            return;
+        }
+        updateStatus(apiErr(res), true);
+    }
+
+    // 统一的"带密码加入"动作
+    async function doJoin(roomId, password) {
+        const res = await Auth.apiFetch('/rooms/' + encodeURIComponent(roomId) + '/join', {
+            method: 'POST',
+            body: { password: password || '' },
+        });
+        if (res.status === 200) {
+            currentRoomPassword = password || '';
+            currentRoomTitle = res.data.room.title;
+            await enterRoom(res.data.roomToken, res.data.room.title);
+            refreshRooms();
+            return true;
+        }
+        const c = res.data && res.data.error && res.data.error.code;
+        if (c === 'bad_password') updateStatus("房间密码错误", true);
+        else if (c === 'room_not_found') { updateStatus("房间不存在", true); refreshRooms(); }
+        else if (c === 'too_many_attempts') updateStatus("密码尝试次数过多，请稍后再试", true);
+        else updateStatus(apiErr(res), true);
+        return false;
+    }
+
+    // ---- 密码输入弹窗（Promise 化）----
+    let pwdResolver = null;
+    function askPassword(title) {
+        $('pwdTitle').textContent = '房间「' + title + '」需要密码';
+        $('pwdInput').value = '';
+        $('pwdMsg').textContent = '';
+        $('pwdMask').classList.add('show');
+        setTimeout(function () { $('pwdInput').focus(); }, 50);
+        return new Promise(function (resolve) { pwdResolver = resolve; });
+    }
+    function closePwd(value) {
+        $('pwdMask').classList.remove('show');
+        const r = pwdResolver;
+        pwdResolver = null;
+        if (r) r(value);
+    }
+
+    // ---- 房间列表 ----
+    const roomData = { all: [], mine: [], live: {}, tab: 'active', timer: null };
+
+    async function refreshRooms() {
+        if (!Auth.token) return;
+        const results = await Promise.all([
+            Auth.apiFetch('/rooms'),
+            Auth.apiFetch('/rooms/mine'),
+        ]);
+        if (results[0].status === 200) {
+            roomData.all = results[0].data.rooms || [];
+
+            // 我正待着的房间从列表里消失了 = 创建者把它解散了。
+            // 列表有条数上限，只有没被截断时才敢下这个结论，免得误判。
+            if (currentRoomId && roomData.all.length > 0 && roomData.all.length < 200 &&
+                !roomData.all.some(function (r) { return r.id === currentRoomId; })) {
+                const gone = currentRoomTitle;
+                leaveRoom();
+                updateStatus('房间「' + gone + '」已被创建者解散', true);
+            }
+        }
+        if (results[1].status === 200) roomData.mine = results[1].data.rooms || [];
+
+        // 在线人数在信令服务那边，这里顺带问一次
+        if (authed && ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'list_rooms' }));
+        }
+        renderRoomList();
+    }
+
+    function buildRoomItem(room, peers) {
+        const li = document.createElement('li');
+        li.className = 'room-item' + (peers > 0 ? ' live' : '');
+
+        const head = document.createElement('div');
+        head.className = 'room-item-head';
+
+        const title = document.createElement('span');
+        title.className = 'room-item-title';
+        title.textContent = room.title;    // 一律 textContent，防 XSS
+        head.appendChild(title);
+
+        if (room.hasPassword) {
+            const lock = document.createElement('span');
+            lock.className = 'room-lock';
+            lock.textContent = '🔒';
+            head.appendChild(lock);
+        }
+
+        // 只有创建者能解散。点 × 不触发外层的"加入房间"
+        if (Auth.user && room.ownerId && room.ownerId === Auth.user.id) {
+            const del = document.createElement('button');
+            del.type = 'button';
+            del.className = 'room-del';
+            del.textContent = '×';
+            del.title = '解散房间';
+            del.setAttribute('aria-label', '解散房间 ' + room.title);
+            del.onclick = function (ev) {
+                ev.stopPropagation();
+                dissolveRoom(room);
+            };
+            head.appendChild(del);
+        }
+
+        const meta = document.createElement('div');
+        meta.className = 'room-item-meta';
+        meta.textContent = room.ownerName + ' · ' +
+            (peers > 0 ? peers + ' 人在线' : '无人在线') + ' · ' + room.id;
+
+        li.appendChild(head);
+        li.appendChild(meta);
+        li.onclick = function () { joinFromList(room); };
+        return li;
+    }
+
+    function renderRoomList() {
+        const ul = $('roomList');
+        while (ul.firstChild) ul.removeChild(ul.firstChild);
+
+        const list = roomData.tab === 'mine' ? roomData.mine : roomData.all;
+        let shown = 0;
+        for (let i = 0; i < list.length; i++) {
+            const room = list[i];
+            const peers = roomData.live[room.id] || 0;
+            if (roomData.tab === 'active' && peers === 0) continue;
+            ul.appendChild(buildRoomItem(room, peers));
+            shown++;
+        }
+
+        if (shown === 0) {
+            const li = document.createElement('li');
+            li.className = 'room-empty';
+            li.textContent = roomData.tab === 'active'
+                ? '现在没有人在房间里，点右上角「+ 新建」开一个'
+                : '你还没加入过任何房间';
+            ul.appendChild(li);
+        }
+    }
+
+    function startRoomPolling() {
+        if (roomData.timer) return;
+        refreshRooms();
+        roomData.timer = setInterval(function () {
+            if (!Auth.token) return;
+            refreshRooms();
+        }, 4000);
+    }
+
+    function setRoomTab(tab) {
+        roomData.tab = tab;
+        $('tabActive').className = 'side-tab' + (tab === 'active' ? ' active' : '');
+        $('tabMine').className = 'side-tab' + (tab === 'mine' ? ' active' : '');
+        renderRoomList();
     }
 
     // ========== Init ==========
@@ -1233,13 +1897,34 @@
         await connectWebSocket().catch(() => updateStatus("WebSocket 连接失败", true));
     };
 
-    $('createBtn').onclick = createRoom;
+    $('createBtn').onclick = openCreateModal;          // 页面上的「创建房间」按钮
+    $('newRoomBtn').onclick = openCreateModal;         // 侧栏的「+ 新建」
+    $('createCancel').onclick = closeCreateModal;
+    $('createConfirm').onclick = submitCreateRoom;
+    $('createMask').onclick = (e) => { if (e.target === $('createMask')) closeCreateModal(); };
+
+    $('pwdCancel').onclick = () => closePwd(null);
+    $('pwdConfirm').onclick = () => closePwd($('pwdInput').value.trim());
+    $('pwdInput').onkeydown = (e) => { if (e.key === 'Enter') closePwd($('pwdInput').value.trim()); };
+
     $('joinBtn').onclick = () => {
-        const roomId = $('roomIdInput').value.trim().toUpperCase();
-        if (roomId) joinRoom(roomId);
+        const code = $('roomIdInput').value.trim().toUpperCase();
+        if (code) joinByCode(code);
         else alert("请输入房间号");
     };
+    $('roomIdInput').onkeydown = (e) => {
+        if (e.key === 'Enter') $('joinBtn').onclick();
+    };
+
+    // 侧栏两个 Tab
+    $('tabActive').onclick = () => setRoomTab('active');
+    $('tabMine').onclick = () => setRoomTab('mine');
+
+    // 窄屏抽屉
+    $('sidebarToggle').onclick = () => $('sidebar').classList.toggle('open');
+
     $('hangupBtn').onclick = () => hangup(true);
+    $('leaveBtn').onclick = leaveRoom;
     $('micBtn').onclick = toggleMic;
     $('videoBtn').onclick = toggleVideo;
     $('logoutBtn').onclick = async () => {

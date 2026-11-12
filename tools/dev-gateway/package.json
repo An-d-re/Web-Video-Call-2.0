@@ -1,0 +1,14 @@
+{
+  "name": "dev-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "description": "本地开发网关：静态托管 + /api 反代 + 假信令服务，用于在没有服务器的环境下验证前端流程",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node e2e-test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

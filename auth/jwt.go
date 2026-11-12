@@ -17,8 +17,11 @@ import (
 )
 
 const (
-	// TokenTypeAccess 标记 access token，防止 refresh token 或其它用途的 token 被冒用
+	// TokenTypeAccess 登录凭证，信令服务用它认人
 	TokenTypeAccess = "access"
+
+	// TokenTypeRoom 进房通行证：auth 服务校验密码后签发，信令服务只验签取 roomId
+	TokenTypeRoom = "room"
 
 	// clockSkew 允许的时钟偏移。服务器时间漂移时，不愿把刚签发的 token 判成过期，
 	// 也不愿让过期 token 多活太久，60 秒是常见取值。
@@ -33,36 +36,32 @@ var (
 	ErrTokenType      = errors.New("token 类型不匹配")
 )
 
-// Claims 是 access token 的载荷。
+// Claims 是 access / room 令牌共用的载荷。
 type Claims struct {
-	Sub      int64  `json:"sub"`      // 用户 id
-	Username string `json:"username"` // 登录名，便于日志与排查，不作为鉴权依据
-	Name     string `json:"name"`     // 展示名；信令服务据此显示真实姓名，无需再查库
-	Typ      string `json:"typ"`      // 固定 "access"
-	Iat      int64  `json:"iat"`      // 签发时间（unix 秒）
-	Exp      int64  `json:"exp"`      // 过期时间（unix 秒）
-	Jti      string `json:"jti"`      // 唯一 id，便于将来做黑名单
+	Sub      int64  `json:"sub"`            // 用户 id
+	Username string `json:"username"`       // 登录名，便于日志与排查，不作为鉴权依据
+	Name     string `json:"name,omitempty"` // 展示名；信令服务据此显示真实姓名，无需再查库
+	Room     string `json:"room,omitempty"` // 房间号（仅 room 令牌用）
+	Typ      string `json:"typ"`            // "access" 或 "room"
+	Iat      int64  `json:"iat"`            // 签发时间（unix 秒）
+	Exp      int64  `json:"exp"`            // 过期时间（unix 秒）
+	Jti      string `json:"jti"`            // 唯一 id，便于将来做黑名单
 }
 
 // jwtHeader 固定为 HS256/JWT。验签时仍然会解析真实 header 并校验 alg，
 // 不接受 token 自带 header 里的任意算法。
 var jwtHeader = base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 
-// signAccessToken 签发 access token。
-func signAccessToken(secret []byte, userID int64, username, displayName string, ttl time.Duration, now time.Time) (string, error) {
+// signToken 是签发通用实现：统一填充 iat / exp / jti。
+func signToken(secret []byte, claims Claims, ttl time.Duration, now time.Time) (string, error) {
 	jti, err := randomToken(16)
 	if err != nil {
 		return "", err
 	}
-	claims := Claims{
-		Sub:      userID,
-		Username: username,
-		Name:     displayName,
-		Typ:      TokenTypeAccess,
-		Iat:      now.Unix(),
-		Exp:      now.Add(ttl).Unix(),
-		Jti:      jti,
-	}
+	claims.Iat = now.Unix()
+	claims.Exp = now.Add(ttl).Unix()
+	claims.Jti = jti
+
 	payload, err := json.Marshal(claims)
 	if err != nil {
 		return "", err
@@ -72,8 +71,31 @@ func signAccessToken(secret []byte, userID int64, username, displayName string, 
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-// verifyAccessToken 验签并返回载荷。
-func verifyAccessToken(secret []byte, token string, now time.Time) (*Claims, error) {
+// signAccessToken 签发登录凭证。
+func signAccessToken(secret []byte, userID int64, username, displayName string,
+	ttl time.Duration, now time.Time) (string, error) {
+	return signToken(secret, Claims{
+		Sub:      userID,
+		Username: username,
+		Name:     displayName,
+		Typ:      TokenTypeAccess,
+	}, ttl, now)
+}
+
+// signRoomToken 签发进房通行证。
+// 信令服务据此判断"这个连接有权进入哪个房间"，不需要查数据库、不需要看密码。
+func signRoomToken(secret []byte, userID int64, username, roomID string,
+	ttl time.Duration, now time.Time) (string, error) {
+	return signToken(secret, Claims{
+		Sub:      userID,
+		Username: username,
+		Room:     roomID,
+		Typ:      TokenTypeRoom,
+	}, ttl, now)
+}
+
+// verifyToken 验签并校验 typ。
+func verifyToken(secret []byte, token, expectedTyp string, now time.Time) (*Claims, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return nil, ErrTokenMalformed
@@ -116,7 +138,7 @@ func verifyAccessToken(secret []byte, token string, now time.Time) (*Claims, err
 	if err := json.Unmarshal(payloadJSON, &claims); err != nil {
 		return nil, ErrTokenMalformed
 	}
-	if claims.Typ != TokenTypeAccess {
+	if claims.Typ != expectedTyp {
 		return nil, ErrTokenType
 	}
 	if claims.Exp == 0 || now.Unix() > claims.Exp+int64(clockSkew/time.Second) {
@@ -125,7 +147,21 @@ func verifyAccessToken(secret []byte, token string, now time.Time) (*Claims, err
 	if claims.Sub <= 0 {
 		return nil, ErrTokenMalformed
 	}
+	// room 令牌必须带房间号，否则信令服务无法据此入房
+	if expectedTyp == TokenTypeRoom && claims.Room == "" {
+		return nil, ErrTokenMalformed
+	}
 	return &claims, nil
+}
+
+// verifyAccessToken 校验登录凭证。
+func verifyAccessToken(secret []byte, token string, now time.Time) (*Claims, error) {
+	return verifyToken(secret, token, TokenTypeAccess, now)
+}
+
+// verifyRoomToken 校验进房通行证（信令服务侧逻辑的 Go 对照实现）
+func verifyRoomToken(secret []byte, token string, now time.Time) (*Claims, error) {
+	return verifyToken(secret, token, TokenTypeRoom, now)
 }
 
 func signHS256(secret []byte, input string) []byte {

@@ -37,3 +37,7 @@ auth/auth
 
 # 本地开发环境安装脚本的执行残留
 _install/
+
+# 本地开发网关的依赖与 npm 缓存（都在工作区内，避免污染 C 盘）
+tools/dev-gateway/node_modules/
+.npm-cache/

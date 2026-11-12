@@ -89,6 +89,8 @@ Json::Value GuestJson() {
 }
 
 // 房间管理：roomId -> 该房间内的连接列表（最多2人）
+// 注意：这里只有"运行时状态"（谁现在连着）。房间是否存在、标题、密码
+// 全部在 PostgreSQL 里，由 auth 服务负责；信令服务只认 roomToken。
 std::unordered_map<std::string, std::vector<TcpConnectionPtr>> g_rooms;
 std::mutex g_rooms_mutex;
 
@@ -388,9 +390,10 @@ TcpConnectionPtr removeFromRoom(const TcpConnectionPtr& conn) {
                 other = clients[0];
             }
             if (clients.empty()) {
+                // 房间"是否存在"由数据库负责，内存里这个空壳可以立刻回收
                 std::string deletedRoom = it->first;  // 先保存，erase后it失效
                 g_rooms.erase(it);
-                LOG_INFO << "房间 " << deletedRoom << " 已删除（双方都离开）";
+                LOG_INFO << "房间 " << deletedRoom << " 已空，回收运行时状态";
             } else {
                 LOG_INFO << "客户端离开房间 " << it->first
                          << "，房间仍有 " << clients.size() << " 人（等待新客户端）";
@@ -495,12 +498,16 @@ void sendJson(const TcpConnectionPtr& conn, const Json::Value& msg) {
 
 // 入房应答。客户端只有收到 joined 才会把房间标记为"已确认"，
 // 避免乐观更新导致的"界面上已进房、服务端其实没进"。
+// inCall=true 表示房间里已经凑满 2 人（通话正在进行），
+// 客户端据此保持"通话中"，而不是把状态打回"等待对方"。
 // 注意：调用点在 g_rooms_mutex 之下，这里会再取 g_auth_mutex（符合约定的加锁顺序）。
-void sendJoined(const TcpConnectionPtr& conn, const std::string& roomId, size_t peerCount) {
+void sendJoined(const TcpConnectionPtr& conn, const std::string& roomId,
+                size_t peerCount, bool inCall) {
     Json::Value ack;
     ack["type"] = "joined";
     ack["roomId"] = roomId;
     ack["peers"] = static_cast<Json::UInt>(peerCount);
+    ack["inCall"] = inCall;
 
     ConnAuth me;
     ack["self"] = GetAuth(conn, &me) ? AuthToJson(me) : GuestJson();
@@ -657,7 +664,8 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             const std::string token = root.get("token", "").asString();
             jwt::Claims claims;
             const std::string reason = jwt::Verify(
-                token, g_jwt_secret, static_cast<int64_t>(::time(nullptr)), &claims);
+                token, g_jwt_secret, jwt::kTypAccess,
+                static_cast<int64_t>(::time(nullptr)), &claims);
 
             if (reason != jwt::kOk) {
                 LOG_WARN << "鉴权失败 [" << reason << "] 来源 "
@@ -689,13 +697,54 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             continue;
         }
 
+        // ---------- 实时房间列表 ----------
+        // 只回答"现在哪个房间有几个人"。房间标题、是否加密、历史人数在 auth 服务，
+        // 客户端按 roomId 合并两份数据即可。
+        if (type == "list_rooms") {
+            if (g_auth_required && !GetAuth(conn, nullptr)) {
+                sendError(conn, "unauthorized", "请先登录");
+                continue;
+            }
+            Json::Value arr(Json::arrayValue);
+            {
+                std::lock_guard<std::mutex> lock(g_rooms_mutex);
+                for (auto& kv : g_rooms) {
+                    if (kv.second.empty()) continue;
+                    Json::Value r;
+                    r["roomId"] = kv.first;
+                    r["peers"] = static_cast<Json::UInt>(kv.second.size());
+                    arr.append(r);
+                }
+            }
+            Json::Value resp;
+            resp["type"] = "live_rooms";
+            resp["rooms"] = arr;
+            sendJson(conn, resp);
+            continue;
+        }
+
         if (type == "join_room") {
             if (g_auth_required && !GetAuth(conn, nullptr)) {
                 sendError(conn, "unauthorized", "请先登录");
                 continue;
             }
-            std::string roomId = root.get("roomId", "").asString();
-            if (roomId.empty()) continue;
+
+            // 房间的权威数据在 PostgreSQL：房间是否存在、密码对不对，
+            // 都已由 auth 服务在签发 roomToken 之前校验完了。
+            // 信令服务这里只做一件事：验签，取出 roomId。
+            // 这样 C++ 侧不需要连数据库，也不需要知道密码。
+            const std::string roomToken = root.get("roomToken", "").asString();
+            jwt::Claims roomClaims;
+            const std::string roomReason = jwt::Verify(
+                roomToken, g_jwt_secret, jwt::kTypRoom,
+                static_cast<int64_t>(::time(nullptr)), &roomClaims);
+            if (roomReason != jwt::kOk) {
+                LOG_WARN << "进房凭证校验失败 [" << roomReason << "] 来源 "
+                         << conn->peerAddress().toIpPort();
+                sendError(conn, "invalid_room_token", "进房凭证无效或已过期，请重新加入房间");
+                continue;
+            }
+            const std::string roomId = roomClaims.room;
 
             // 1) 重新加入房间 = 新一次通话的开始，必须清除这条连接的历史挂断标记。
             // 否则连接复用（挂断后再次加入同一房间）时，第二次 bye 会被当成
@@ -723,14 +772,18 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             }
 
             std::lock_guard<std::mutex> lock(g_rooms_mutex);
+
+            // 运行时房间：auth 服务已经授权过，第一次有人进来时创建即可。
+            // 空房间在最后一个人离开时立即回收——房间"是否存在"由数据库负责，
+            // 内存里不需要保留空壳（也就不再需要宽限期）。
             auto& clients = g_rooms[roomId];
 
             // 同一连接重复 join 同一房间时保持幂等：否则 clients 里会出现两个相同连接，
             // size()==2 会让这条连接在"只有自己一人"的情况下收到发给自己的一对 start_call。
-            // 幂等路径同样要回 ack，否则前端会一直停在"正在加入房间"。
+            // 幂等路径同样要回 ack，而且必须如实告诉客户端"这里已经在通话中"。
             if (std::find(clients.begin(), clients.end(), conn) != clients.end()) {
                 LOG_INFO << "连接已在房间 " << roomId << " 中，忽略重复 join_room";
-                sendJoined(conn, roomId, clients.size());
+                sendJoined(conn, roomId, clients.size(), clients.size() >= 2);
                 continue;
             }
 
@@ -742,7 +795,7 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             clients.push_back(conn);
             LOG_INFO << "客户端 " << conn->peerAddress().toIpPort()
                      << " 加入房间 " << roomId << "，当前人数 " << clients.size();
-            sendJoined(conn, roomId, clients.size());
+            sendJoined(conn, roomId, clients.size(), clients.size() >= 2);
             if (clients.size() == 2) {
                 TcpConnectionPtr initiator = clients[0];
                 TcpConnectionPtr responder = clients[1];

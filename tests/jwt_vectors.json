@@ -6,23 +6,23 @@
       "expect": "ok",
       "name": "valid",
       "sub": 42,
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJmMjNaSUU4R0FHTmhOT3dibTJDYk53In0.rTLCMx9WtdQDHAJOYW19Nlh_1yOH94UR5yabjk_9BFM",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJYemZMdkpTazdja2VZMVhQLTJKOWhnIn0.Sj5aq_hj2sbLdsQ38SMeV4W8wp7BPGAK-s5ET8NpfJg",
       "username": "alice"
     },
     {
       "expect": "token_expired",
       "name": "expired",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjcsInVzZXJuYW1lIjoiZXhwaXJlZF91c2VyIiwibmFtZSI6Iui_h-acn-eUqOaItyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNjk5OTk2NDAwLCJqdGkiOiJtb1hsLU9RMkxTaDVCaEhSdTZqcndnIn0.-ltgDOvYGDiqnxwxPEVfX5jVg1QvF0l37T_kYkCNzvc"
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjcsInVzZXJuYW1lIjoiZXhwaXJlZF91c2VyIiwibmFtZSI6Iui_h-acn-eUqOaItyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNjk5OTk2NDAwLCJqdGkiOiJDSWtsTl9kWTlTNVU5emR4U1U3ZWVRIn0.psJg5OvkABkG1zYBqXG6T2UyMwvMYGfW0t_fqMyNAgc"
     },
     {
       "expect": "bad_signature",
       "name": "wrong_secret",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJhWW5MYUlBUlI0MVdOZ1ROeTcxSE5BIn0.GlNnMWrfuFmDw09y7no3Tu6EHq947enklqyhGYKGuWg"
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJ6cFB5OFRRQVdoMWQ5LWRUM2JzTGRRIn0.hi2-0LaUmGE2vrWwkpHc0mQQR8pBdmBMHX43pSaCcF4"
     },
     {
       "expect": "bad_signature",
       "name": "tampered_payload",
-      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjk5OSwidXNlcm5hbWUiOiJhbGljZSIsIm5hbWUiOiLpmL_kvJ8iLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMCwianRpIjoidGFtcGVyZWQifQ.rTLCMx9WtdQDHAJOYW19Nlh_1yOH94UR5yabjk_9BFM"
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjk5OSwidXNlcm5hbWUiOiJhbGljZSIsIm5hbWUiOiLpmL_kvJ8iLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMzYwMCwianRpIjoidGFtcGVyZWQifQ.Sj5aq_hj2sbLdsQ38SMeV4W8wp7BPGAK-s5ET8NpfJg"
     },
     {
       "expect": "bad_algorithm",
@@ -43,6 +43,27 @@
       "expect": "malformed",
       "name": "empty",
       "token": ""
+    },
+    {
+      "expect": "ok",
+      "expectTyp": "room",
+      "name": "room_token_valid",
+      "room": "ABC234",
+      "sub": 42,
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwicm9vbSI6IkFCQzIzNCIsInR5cCI6InJvb20iLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDEyMCwianRpIjoiUVJtbi1fdDdGMVFWdDQ5LTFBdzhrQSJ9.CK5PEfOc5t5L_4zZM6IGiXB-Law_rq88kz3fpj4qqz4",
+      "username": "alice"
+    },
+    {
+      "expect": "bad_type",
+      "expectTyp": "access",
+      "name": "room_token_as_access",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwicm9vbSI6IkFCQzIzNCIsInR5cCI6InJvb20iLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDEyMCwianRpIjoiUVJtbi1fdDdGMVFWdDQ5LTFBdzhrQSJ9.CK5PEfOc5t5L_4zZM6IGiXB-Law_rq88kz3fpj4qqz4"
+    },
+    {
+      "expect": "bad_type",
+      "expectTyp": "room",
+      "name": "access_token_as_room",
+      "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjQyLCJ1c2VybmFtZSI6ImFsaWNlIiwibmFtZSI6IumYv-S8nyIsInR5cCI6ImFjY2VzcyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAzNjAwLCJqdGkiOiJYemZMdkpTazdja2VZMVhQLTJKOWhnIn0.Sj5aq_hj2sbLdsQ38SMeV4W8wp7BPGAK-s5ET8NpfJg"
     }
   ],
   "now": 1700000000,

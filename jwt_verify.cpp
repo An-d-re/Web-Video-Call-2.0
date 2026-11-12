@@ -16,6 +16,9 @@ const char* kBadSignature = "bad_signature";
 const char* kExpired = "token_expired";
 const char* kBadType = "bad_type";
 
+const char* kTypAccess = "access";
+const char* kTypRoom = "room";
+
 namespace {
 
 // 时钟偏移容差，与 Go 侧保持一致（60 秒）
@@ -104,7 +107,7 @@ bool Base64UrlDecode(const std::string& in, std::string& out) {
 }
 
 std::string Verify(const std::string& token, const std::string& secret,
-                   int64_t nowUnix, Claims* claims) {
+                   const std::string& expectedTyp, int64_t nowUnix, Claims* claims) {
     if (claims == nullptr) return kMalformed;
 
     std::string headerB64, payloadB64, signatureB64;
@@ -133,16 +136,20 @@ std::string Verify(const std::string& token, const std::string& secret,
 
     Claims c;
     c.typ = payload["typ"].asString();
-    if (c.typ != "access") return kBadType;
+    // 类型隔离：登录凭证不能当进房凭证用，反之亦然
+    if (c.typ != expectedTyp) return kBadType;
 
     c.sub = payload["sub"].asInt64();
     c.username = payload["username"].asString();
     c.displayName = payload["name"].asString();
+    c.room = payload["room"].asString();
     c.iat = payload["iat"].asInt64();
     c.exp = payload["exp"].asInt64();
     c.jti = payload["jti"].asString();
 
     if (c.sub <= 0 || c.exp == 0) return kMalformed;
+    // room 令牌必须带房间号，否则无法据此入房
+    if (c.typ == std::string(kTypRoom) && c.room.empty()) return kMalformed;
     if (nowUnix > c.exp + kClockSkew) return kExpired;
 
     // 展示名缺省时回退到登录名，保证 UI 永远有东西可显示

@@ -36,7 +36,7 @@ func newTestServer(t *testing.T) (*Server, func()) {
 	if err != nil {
 		t.Fatalf("连接数据库失败: %v", err)
 	}
-	if _, err := pool.Exec(ctx, "TRUNCATE auth_tokens, users RESTART IDENTITY CASCADE"); err != nil {
+	if _, err := pool.Exec(ctx, "TRUNCATE auth_tokens, room_members, rooms, users RESTART IDENTITY CASCADE"); err != nil {
 		pool.Close()
 		t.Fatalf("清空表失败: %v", err)
 	}
