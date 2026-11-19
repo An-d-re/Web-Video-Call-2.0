@@ -24,10 +24,14 @@ const HOST = process.argv[2] || '127.0.0.1';
 const PORT = Number(process.argv[3] || 8888);
 const SECRET = process.env.JWT_SECRET || 'dev-secret-at-least-32-bytes-long-0001';
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skipped = 0;
 function ok(name, cond, extra) {
   if (cond) { pass++; console.log('PASS  ' + name); }
   else { fail++; console.log('FAIL  ' + name + (extra ? '  => ' + JSON.stringify(extra) : '')); }
+}
+function skip(name, why) {
+  skipped++;
+  console.log('SKIP  ' + name + '  (' + why + ')');
 }
 
 const b64u = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -248,8 +252,29 @@ function get(p) {
   ok('建连后不发 auth，5 秒后被踢 -> auth_timeout',
     (!!e6 && e6.code === 'auth_timeout') || (e6 === null && mute.closed), { waitedMs: dt, got: e6 });
 
+  // 16. /stats 指标接口：没 token 必须 403（不能让人白看内部状态）
+  const st1 = await get('/stats');
+  ok('/stats 不带 token -> 403', st1.status === 403, { status: st1.status });
+
+  // 17. /stats 带对 token -> 200 且结构齐全（压测脚本和运维都靠它）
+  const statsToken = process.env.STATS_TOKEN || '';
+  if (!statsToken) {
+    skip('/stats 带 token 返回结构正确的 JSON', '未设置 STATS_TOKEN，跳过');
+  } else {
+    const st2 = await get('/stats?token=' + encodeURIComponent(statsToken));
+    let j = null;
+    try { j = JSON.parse(st2.body); } catch (e) { /* 保持 null */ }
+    const need = ['uptimeSeconds', 'pid', 'connections', 'rooms', 'messages', 'errors', 'latencyUs', 'resources'];
+    const missing = j ? need.filter((k) => !(k in j)) : need;
+    ok('/stats 带 token -> 200 且字段齐全', st2.status === 200 && missing.length === 0,
+      { status: st2.status, missing, sample: j ? { uptime: j.uptimeSeconds, ws: j.connections && j.connections.ws } : st2.body.slice(0, 120) });
+    const shapeOk = !!j && j.latencyUs && j.latencyUs.join_room && j.latencyUs.forward
+      && typeof j.messages.auth === 'number' && typeof j.errors.auth_fail === 'number';
+    ok('/stats 延迟与计数结构可直接用于压测', shapeOk, j ? { joinSamples: j.latencyUs.join_room.samples } : null);
+  }
+
   [bad, confused, sneak, alice, bob, carol, mute].forEach((c) => c.close());
 
-  console.log(`\n合计: ${pass} 通过, ${fail} 失败`);
+  console.log(`\n合计: ${pass} 通过, ${fail} 失败${skipped ? ', ' + skipped + ' 跳过' : ''}`);
   process.exit(fail === 0 ? 0 : 1);
 })().catch((e) => { console.error('测试崩溃:', e); process.exit(2); });

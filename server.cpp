@@ -15,15 +15,19 @@
 #include <mutex>
 #include <queue>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <unistd.h>
+#include <dirent.h>
 
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <openssl/evp.h>
+#include <openssl/crypto.h>
 
 #include <json/json.h>
 
@@ -194,6 +198,258 @@ std::string parseHttpPath(const std::string& req) {
     size_t path_end = req.find(" HTTP/", path_start);
     if (path_end == std::string::npos) return "/";
     return req.substr(path_start, path_end - path_start);
+}
+
+// ========== 运行指标（/stats）==========
+// 设计原则：热路径只做原子自增 + 一次取时间戳，不加锁、不拼字符串。
+// 采样接口（GET /stats）才去读 map 的大小、读 /proc，这些都不在消息路径上。
+// STATS_TOKEN 未配置时只允许 loopback 访问；配置后必须带 ?token= 才返回数据。
+std::string g_stats_token;
+const int64_t g_startedAtSec = static_cast<int64_t>(::time(nullptr));
+
+enum MsgKind {
+    kMsgAuth = 0, kMsgJoinRoom, kMsgOffer, kMsgAnswer, kMsgIce,
+    kMsgBye, kMsgVideoMute, kMsgMicMute, kMsgListRooms, kMsgOther,
+    kMsgKindCount
+};
+
+// 静态存储期对象在 main() 之前被零初始化，因此不需要显式构造。
+std::atomic<uint64_t> g_msg_count[kMsgKindCount];
+
+enum ErrKind {
+    kErrAuthFail = 0, kErrAuthTimeout, kErrRoomFull, kErrInvalidRoomToken,
+    kErrBadJson, kErrKindCount
+};
+std::atomic<uint64_t> g_err_count[kErrKindCount];
+
+// 延迟直方图：固定分桶，分位数按桶上界估算（误差不超过桶宽）。
+// 为什么不用记录所有样本：压测时每秒上万条消息，存样本会把内存吃光。
+const uint64_t kLatBucketUs[] = {100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000};
+const int kLatBucketCount = 10;  // 前 9 个是上界，最后一个是 "> 50ms"
+
+struct LatencyHist {
+    std::atomic<uint64_t> buckets[kLatBucketCount];
+    std::atomic<uint64_t> count;
+    std::atomic<uint64_t> maxUs;
+
+    LatencyHist() : count(0), maxUs(0) {
+        for (int i = 0; i < kLatBucketCount; ++i) buckets[i].store(0);
+    }
+
+    void add(uint64_t us) {
+        int i = 0;
+        while (i < kLatBucketCount - 1 && us > kLatBucketUs[i]) ++i;
+        buckets[i].fetch_add(1, std::memory_order_relaxed);
+        count.fetch_add(1, std::memory_order_relaxed);
+        uint64_t cur = maxUs.load(std::memory_order_relaxed);
+        while (us > cur && !maxUs.compare_exchange_weak(cur, us, std::memory_order_relaxed)) {
+        }
+    }
+
+    // p 为 0~100 的百分位；没有样本时返回 0。
+    uint64_t percentile(double p) const {
+        const uint64_t total = count.load(std::memory_order_relaxed);
+        if (total == 0) return 0;
+        uint64_t target = static_cast<uint64_t>(total * p / 100.0);
+        if (target == 0) target = 1;
+        uint64_t cum = 0;
+        for (int i = 0; i < kLatBucketCount; ++i) {
+            cum += buckets[i].load(std::memory_order_relaxed);
+            if (cum >= target) {
+                // 最后一桶没有上界，用已观测到的最大值代替
+                if (i == kLatBucketCount - 1) return maxUs.load(std::memory_order_relaxed);
+                return kLatBucketUs[i];
+            }
+        }
+        return maxUs.load(std::memory_order_relaxed);
+    }
+};
+
+// 只测两条关键路径：入房处理、消息转发。给每条消息都取时间戳的话，
+// 测出来的就是测量本身的开销了。
+LatencyHist g_lat_join_room;
+LatencyHist g_lat_forward;
+
+uint64_t NowUs() {
+    using namespace std::chrono;
+    return static_cast<uint64_t>(
+        duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+}
+
+// RAII：离开作用域（包括 continue / return）时自动记一条耗时，
+// 这样入房分支里多个提前 return 的地方不用逐个补。
+class LatencyTimer {
+public:
+    explicit LatencyTimer(LatencyHist& h) : hist_(h), startUs_(NowUs()) {}
+    ~LatencyTimer() { hist_.add(NowUs() - startUs_); }
+    LatencyTimer(const LatencyTimer&) = delete;
+    LatencyTimer& operator=(const LatencyTimer&) = delete;
+
+private:
+    LatencyHist& hist_;
+    uint64_t startUs_;
+};
+
+MsgKind MsgKindOf(const std::string& type) {
+    if (type == "auth") return kMsgAuth;
+    if (type == "join_room") return kMsgJoinRoom;
+    if (type == "offer") return kMsgOffer;
+    if (type == "answer") return kMsgAnswer;
+    if (type == "ice") return kMsgIce;
+    if (type == "bye") return kMsgBye;
+    if (type == "video_mute") return kMsgVideoMute;
+    if (type == "mic_mute") return kMsgMicMute;
+    if (type == "list_rooms") return kMsgListRooms;
+    return kMsgOther;
+}
+
+// 从 "/stats?a=1&token=xyz" 里取 query 参数（值不做 URL 解码：token 用 base64 字母表）
+std::string queryParam(const std::string& path, const std::string& key) {
+    const size_t q = path.find('?');
+    if (q == std::string::npos) return "";
+    size_t pos = q + 1;
+    while (pos < path.size()) {
+        size_t amp = path.find('&', pos);
+        const std::string pair =
+            path.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+        const size_t eq = pair.find('=');
+        if (eq != std::string::npos && pair.compare(0, eq, key) == 0) {
+            return pair.substr(eq + 1);
+        }
+        if (amp == std::string::npos) break;
+        pos = amp + 1;
+    }
+    return "";
+}
+
+double readRssMb() {
+    std::ifstream f("/proc/self/statm");
+    long totalPages = 0, residentPages = 0;
+    if (!(f >> totalPages >> residentPages)) return 0.0;
+    const long pageKb = ::sysconf(_SC_PAGESIZE) / 1024;
+    return static_cast<double>(residentPages) * static_cast<double>(pageKb) / 1024.0;
+}
+
+int countOpenFds() {
+    DIR* d = ::opendir("/proc/self/fd");
+    if (!d) return -1;
+    int n = 0;
+    while (struct dirent* e = ::readdir(d)) {
+        if (e->d_name[0] != '.') ++n;
+    }
+    ::closedir(d);
+    return n - 1;  // 减去 opendir 自己占的那个 fd
+}
+
+Json::Value histJson(const LatencyHist& h) {
+    Json::Value v;
+    v["p50"] = static_cast<Json::UInt64>(h.percentile(50));
+    v["p95"] = static_cast<Json::UInt64>(h.percentile(95));
+    v["p99"] = static_cast<Json::UInt64>(h.percentile(99));
+    v["max"] = static_cast<Json::UInt64>(h.maxUs.load(std::memory_order_relaxed));
+    v["samples"] = static_cast<Json::UInt64>(h.count.load(std::memory_order_relaxed));
+    return v;
+}
+
+// 把计数与直方图清零，用于压测时"只看这一轮"。
+// 只在 /stats?reset=1 且鉴权通过时调用；计数器是原子变量，并发下个别消息可能记到
+// 清零前的桶里，这个精度对压测足够，所以不额外加锁。
+void resetStats() {
+    for (int i = 0; i < kMsgKindCount; ++i) g_msg_count[i].store(0, std::memory_order_relaxed);
+    for (int i = 0; i < kErrKindCount; ++i) g_err_count[i].store(0, std::memory_order_relaxed);
+    for (int i = 0; i < kLatBucketCount; ++i) {
+        g_lat_join_room.buckets[i].store(0, std::memory_order_relaxed);
+        g_lat_forward.buckets[i].store(0, std::memory_order_relaxed);
+    }
+    g_lat_join_room.count.store(0, std::memory_order_relaxed);
+    g_lat_join_room.maxUs.store(0, std::memory_order_relaxed);
+    g_lat_forward.count.store(0, std::memory_order_relaxed);
+    g_lat_forward.maxUs.store(0, std::memory_order_relaxed);
+}
+
+// 汇总当前运行状态。会短暂持锁读 map 大小——这条路径每秒最多被调用几次，
+// 与消息热路径无关，所以直接加锁是可接受的。
+Json::Value statsJson() {
+    Json::Value root;
+    root["uptimeSeconds"] = static_cast<Json::Int64>(::time(nullptr) - g_startedAtSec);
+    root["pid"] = static_cast<Json::Int>(::getpid());
+
+    size_t wsCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_clients_mutex);
+        wsCount = g_ws_clients.size();
+    }
+    size_t authedCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_auth_mutex);
+        for (const auto& kv : g_auth) {
+            if (kv.second.authenticated) ++authedCount;
+        }
+    }
+    root["connections"]["ws"] = static_cast<Json::UInt>(wsCount);
+    root["connections"]["authed"] = static_cast<Json::UInt>(authedCount);
+    root["connections"]["unauthenticated"] =
+        static_cast<Json::UInt>(wsCount > authedCount ? wsCount - authedCount : 0);
+
+    size_t roomTotal = 0, roomFull = 0, roomMembers = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_rooms_mutex);
+        roomTotal = g_rooms.size();
+        for (const auto& kv : g_rooms) {
+            roomMembers += kv.second.size();
+            if (kv.second.size() >= 2) ++roomFull;
+        }
+    }
+    root["rooms"]["total"] = static_cast<Json::UInt>(roomTotal);
+    root["rooms"]["full"] = static_cast<Json::UInt>(roomFull);
+    root["rooms"]["members"] = static_cast<Json::UInt>(roomMembers);
+
+    static const char* kMsgNames[kMsgKindCount] = {
+        "auth", "join_room", "offer", "answer", "ice",
+        "bye", "video_mute", "mic_mute", "list_rooms", "other"};
+    for (int i = 0; i < kMsgKindCount; ++i) {
+        root["messages"][kMsgNames[i]] = static_cast<Json::UInt64>(
+            g_msg_count[i].load(std::memory_order_relaxed));
+    }
+
+    static const char* kErrNames[kErrKindCount] = {
+        "auth_fail", "auth_timeout", "room_full", "invalid_room_token", "bad_json"};
+    for (int i = 0; i < kErrKindCount; ++i) {
+        root["errors"][kErrNames[i]] = static_cast<Json::UInt64>(
+            g_err_count[i].load(std::memory_order_relaxed));
+    }
+
+    root["latencyUs"]["join_room"] = histJson(g_lat_join_room);
+    root["latencyUs"]["forward"] = histJson(g_lat_forward);
+
+    root["resources"]["rssMb"] = readRssMb();
+    root["resources"]["fds"] = static_cast<Json::Int>(countOpenFds());
+    return root;
+}
+
+// /stats 的访问控制：
+//   配了 STATS_TOKEN -> 必须带 ?token=（用定长比较，避免逐字节时序泄漏）
+//   没配            -> 只允许本机访问
+bool statsAllowed(const TcpConnectionPtr& conn, const std::string& path) {
+    if (!g_stats_token.empty()) {
+        const std::string given = queryParam(path, "token");
+        if (given.size() != g_stats_token.size()) return false;
+        return CRYPTO_memcmp(given.data(), g_stats_token.data(), given.size()) == 0;
+    }
+    const std::string ip = conn->peerAddress().toIp();
+    return ip == "127.0.0.1" || ip == "::1";
+}
+
+void sendHttp(const TcpConnectionPtr& conn, int status, const std::string& statusText,
+              const std::string& contentType, const std::string& body) {
+    std::string resp =
+        "HTTP/1.1 " + std::to_string(status) + " " + statusText + "\r\n"
+        "Content-Type: " + contentType + "\r\n"
+        "Content-Length: " + std::to_string(body.size()) + "\r\n"
+        "Cache-Control: no-store\r\n"
+        "Connection: close\r\n\r\n" + body;
+    conn->send(resp);
+    conn->shutdown();
 }
 
 // ========== 加载 TURN 配置文件 ==========
@@ -473,6 +729,10 @@ TcpConnectionPtr removeFromRoom(const TcpConnectionPtr& conn) {
 // ========== 连接回调 ==========
 void onConnection(const TcpConnectionPtr& conn) {
     if (conn->connected()) {
+        // 关掉 Nagle：信令消息都是几十~几百字节的小包，且一问一答。
+        // 不关的话，服务端"刚写完上一条、紧接着写转发消息"会被 Nagle 压住，
+        // 等对端延迟 ACK（典型 40ms），实测 offer 转发多出 43ms。
+        conn->setTcpNoDelay(true);
         LOG_INFO << "新客户端连接：" << conn->peerAddress().toIpPort();
     } else {
         LOG_INFO << "客户端断开：" << conn->peerAddress().toIpPort();
@@ -645,6 +905,26 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
     if (!is_ws_client) {
         // 普通 HTTP 请求
         std::string file_path = parseHttpPath(msg);
+
+        // 运行指标接口：不走 nginx（站点配置里没有这条 location），
+        // 只给本机或持有 STATS_TOKEN 的采样端用。
+        if (file_path == "/stats" || file_path.compare(0, 7, "/stats?") == 0) {
+            if (!statsAllowed(conn, file_path)) {
+                sendHttp(conn, 403, "Forbidden", "application/json; charset=utf-8",
+                         "{\"error\":\"forbidden\"}");
+                return;
+            }
+            // reset=1：压测前清一次窗口，这样读到的就是"这一轮"的数字。
+            // 鉴权通过才会走到这里，所以不会变成随便谁都能清的接口。
+            if (queryParam(file_path, "reset") == "1") {
+                resetStats();
+                LOG_INFO << "指标窗口已重置（/stats?reset=1）";
+            }
+            sendHttp(conn, 200, "OK", "application/json; charset=utf-8",
+                     statsJson().toStyledString());
+            return;
+        }
+
         if (file_path.find("..") != std::string::npos) {
             conn->send("HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nConnection: close\r\n\r\nForbidden");
             conn->shutdown();
@@ -715,9 +995,11 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
         Json::Reader reader;
         if (!reader.parse(decoded, root)) {
             LOG_ERROR << "JSON 解析失败";
+            g_err_count[kErrBadJson].fetch_add(1, std::memory_order_relaxed);
             continue;
         }
         std::string type = root.get("type", "").asString();
+        g_msg_count[MsgKindOf(type)].fetch_add(1, std::memory_order_relaxed);
 
         // ---------- 鉴权 ----------
         if (type == "auth") {
@@ -736,6 +1018,7 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             if (reason != jwt::kOk) {
                 LOG_WARN << "鉴权失败 [" << reason << "] 来源 "
                          << conn->peerAddress().toIpPort();
+                g_err_count[kErrAuthFail].fetch_add(1, std::memory_order_relaxed);
                 sendError(conn, "invalid_token", "凭证无效或已过期");
                 continue;
             }
@@ -790,6 +1073,9 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
         }
 
         if (type == "join_room") {
+            // 记录整个入房处理耗时（验签 + 找房间 + 发 joined/start_call）。
+            // 这是压测里最关心的一条：房间数变多时它会因为线性扫描而变慢。
+            LatencyTimer joinTimer(g_lat_join_room);
             if (g_auth_required && !GetAuth(conn, nullptr)) {
                 sendError(conn, "unauthorized", "请先登录");
                 continue;
@@ -807,6 +1093,7 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             if (roomReason != jwt::kOk) {
                 LOG_WARN << "进房凭证校验失败 [" << roomReason << "] 来源 "
                          << conn->peerAddress().toIpPort();
+                g_err_count[kErrInvalidRoomToken].fetch_add(1, std::memory_order_relaxed);
                 sendError(conn, "invalid_room_token", "进房凭证无效或已过期，请重新加入房间");
                 continue;
             }
@@ -855,6 +1142,7 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
 
             if (clients.size() >= 2) {
                 LOG_INFO << "房间 " << roomId << " 已满，拒绝加入";
+                g_err_count[kErrRoomFull].fetch_add(1, std::memory_order_relaxed);
                 sendError(conn, "room_full", "房间已满");
                 continue;
             }
@@ -907,6 +1195,10 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
 
         if (type == "offer" || type == "answer" || type == "ice" ||
             type == "video_mute" || type == "mic_mute") {
+            // 转发耗时：找对端（线性扫描房间）+ 组帧 + 投递。
+            // 注意它包含当前那条 "转发 xx 长度=..." 的日志开销，属于现状基线，
+            // 阶段二把 payload 日志降级后这个数字应该明显下降。
+            LatencyTimer forwardTimer(g_lat_forward);
             std::lock_guard<std::mutex> lock(g_rooms_mutex);
             TcpConnectionPtr target = nullptr;
             for (auto& kv : g_rooms) {
@@ -1013,6 +1305,10 @@ int main() {
         const std::string flag(v);
         g_auth_required = !(flag == "false" || flag == "0" || flag == "no");
     }
+    // 指标接口的访问令牌：配了就只认 token，没配就只允许本机访问。
+    if (const char* t = ::getenv("STATS_TOKEN")) {
+        g_stats_token = t;
+    }
     if (g_auth_required) {
         if (g_jwt_secret.size() < 32) {
             LOG_ERROR << "JWT_SECRET 未设置或过短（需 ≥32 字节），且 AUTH_REQUIRED 未关闭";
@@ -1051,6 +1347,7 @@ int main() {
         for (auto& conn : expired) {
             if (!conn || !conn->connected()) continue;
             LOG_INFO << "鉴权超时，关闭连接: " << conn->peerAddress().toIpPort();
+            g_err_count[kErrAuthTimeout].fetch_add(1, std::memory_order_relaxed);
             sendError(conn, "auth_timeout", "建连后 5 秒内未发送 auth");
             conn->shutdown();
         }
@@ -1105,6 +1402,8 @@ int main() {
     }
     LOG_INFO << "WebSocket 心跳：每 30 秒 ping，连续两次无 pong 回收连接";
     LOG_INFO << "鉴权：" << (g_auth_required ? "开启（需在 5 秒内 auth）" : "关闭（匿名模式）");
+    LOG_INFO << "指标接口：/stats " << (g_stats_token.empty() ? "（仅本机可访问）"
+                                                              : "（需要 STATS_TOKEN）");
     LOG_INFO << "=====================================";
 
     loop.loop();

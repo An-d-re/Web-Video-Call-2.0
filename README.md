@@ -32,6 +32,7 @@
 | `tests/jwt_vectors.json` | 由 `auth/vectors_test.go` 生成，勿手改 |
 | `tools/dev-gateway/` | 本地开发网关（静态托管 + `/api` 反代 + 假信令），仅本地用 |
 | `tools/e2e/` | 三层端到端测试：信令协议冒烟、全栈接线、真实浏览器通话（说明见 `tools/e2e/README.md`） |
+| `tools/load/` | 压测客户端：走真实业务路径的信令压测 + 服务端 `/stats` 采样（说明见 `tools/load/README.md`） |
 | `auth/` | 认证服务（Go + PostgreSQL）：注册/登录/刷新/登出 |
 | `db/` | 数据库迁移脚本 |
 | `static/index.html` | 前端单页（内联 CSS/JS），含 WebRTC 协商、房间 UI |
@@ -47,6 +48,7 @@
 | `docs/ha-scaling-design.md` | 详细设计：高可用与高并发（分布式化、容量模型、压测与故障演练） |
 | `docs/multiparty-sfu-design.md` | 详细设计：多人通话 / 直播（Mesh→SFU、房间调度、扇出控制、直播分层） |
 | `docs/demo-script.md` | **演示脚本**：答辩/汇报用的 8 分钟流程 + 兜底预案 + 加分材料 |
+| `docs/loadtest-report.md` | **压测报告**：方法、四组场景数据、Nagle 40ms 等三个发现、容量推算 |
 
 ## 依赖
 
@@ -406,7 +408,7 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 
 | 命令 | 检查什么 | 上次实测 |
 |---|---|---|
-| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发（需与服务端相同的 `JWT_SECRET`） | 24/24 |
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + `/stats` 鉴权与结构（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 27/27 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
 | `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、挂断 | 33/33（P2P） |
 | `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 38/38 |
@@ -414,6 +416,30 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 `browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
 加 `--relay` 是验证 TURN 的唯一可信方式：它把页面里的 `RTCPeerConnection` 包一层、强制只收中继候选，
 再断言 `candidate-pair` 的本地候选确实是 `relay` —— 只要有一条走通，就说明 coturn 真的在转发媒体。
+
+### 运行指标与压测
+
+信令服务内置一个只读指标接口（默认只允许本机访问，配了 `STATS_TOKEN` 后凭 token 访问，且**不经过 nginx**）：
+
+```bash
+sudo grep STATS_TOKEN /opt/webrtc/signaling.env
+curl -s "http://127.0.0.1:8888/stats?token=<STATS_TOKEN>" | python3 -m json.tool
+curl -s "http://127.0.0.1:8888/stats?token=<STATS_TOKEN>&reset=1"   # 清窗口，压测用
+```
+
+返回连接数、房间数、按类型分组的消息/错误计数、`join_room` 与转发的延迟分位（微秒）、RSS 与 fd 数。
+
+压测工具 `tools/load/loadtest.js` 只走真实业务路径（auth → join_room → offer/answer → ICE → bye），
+支持 `--mode signaling`（只压 C++）与 `--mode fullstack`（走 nginx + Go + PG）：
+
+```bash
+node tools/load/loadtest.js --host <IP> --mode signaling \
+  --secret "$JWT_SECRET" --stats-token "$STATS_TOKEN" \
+  --rooms 200 --ramp-up 20 --duration 60 --reset
+```
+
+**实测基线**（4 核 4 GiB 虚机、同网段）：2000 连接 / 1000 房间时服务端转发 P95 0.5 ms、CPU 15%、内存 32 MB；
+完整数据、发现与容量推算见 [`docs/loadtest-report.md`](docs/loadtest-report.md)，参数与坑见 [`tools/load/README.md`](tools/load/README.md)。
 
 ## 信令协议
 

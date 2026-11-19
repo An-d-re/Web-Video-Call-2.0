@@ -4,7 +4,7 @@
 # 做什么：
 #   1. 建系统用户 webrtc、部署目录 /opt/webrtc
 #   2. 放两个二进制（C++ 信令、Go 认证）+ 前端静态文件
-#   3. 生成 /opt/webrtc/{auth,signaling}.env（自动生成 JWT_SECRET，权限 600）
+#   3. 生成 /opt/webrtc/{auth,signaling}.env（自动生成 JWT_SECRET / STATS_TOKEN，权限 600）
 #   4. 生成带 IP SAN 的自签证书（浏览器点"继续前往"即可用摄像头）
 #   5. 装 nginx 站点（80 跳 443；/ → 静态页，/api/ → Go，/ws → C++）
 #   6. 装 coturn 并生成 /opt/webrtc/turn_config.json（动态 TURN 凭据）
@@ -223,14 +223,26 @@ EOF
     chmod 600 "$PREFIX/auth.env"
 fi
 
+# 指标接口令牌：/stats 要求带 ?token=。已存在则保留；老部署没有这行就补上，
+# 这样升级上来也能直接采样，不用手工改 600 权限的文件。
+STATS_TOKEN="$(grep -oP '^STATS_TOKEN=\K.*' "$PREFIX/signaling.env" 2>/dev/null || true)"
+if [[ -z "$STATS_TOKEN" ]]; then
+    STATS_TOKEN="$(openssl rand -hex 24)"
+fi
+
 if [[ ! -f "$PREFIX/signaling.env" ]]; then
     cat > "$PREFIX/signaling.env" <<EOF
 JWT_SECRET=$JWT_SECRET
 AUTH_REQUIRED=true
+STATS_TOKEN=$STATS_TOKEN
 EOF
     chown webrtc:webrtc "$PREFIX/signaling.env"
     chmod 600 "$PREFIX/signaling.env"
+elif ! grep -q '^STATS_TOKEN=' "$PREFIX/signaling.env"; then
+    printf 'STATS_TOKEN=%s\n' "$STATS_TOKEN" >> "$PREFIX/signaling.env"
+    log "已为现有 signaling.env 补充 STATS_TOKEN"
 fi
+log "指标令牌（GET /stats?token=...）：$STATS_TOKEN"
 
 # ---------- 4. 自签证书（带 IP SAN）----------
 log "生成自签证书（带 IP SAN，浏览器点「继续前往」即可）"
