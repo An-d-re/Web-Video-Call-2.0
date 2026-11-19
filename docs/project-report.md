@@ -19,7 +19,7 @@ P2P 打不通时由自建 TURN 服务器中继。支持一对一到多人、从�
 
 **当前状态**：v1.0 已在一台 Ubuntu 24.04 虚拟机上完成**全链路部署并逐层验证**——nginx（HTTPS/WSS）+ Go 认证服务（PostgreSQL）
 + 自研 C++ 信令，含 perfect negotiation、ICE 自动恢复、断线重连、半开连接回收。
-三层测试全绿：信令协议 24/24、全栈接线 34/34、真实浏览器通话 22/22（强制中继 27/27）。
+三层测试全绿：信令协议 24/24、全栈接线 34/34、真实浏览器通话 33/33（强制中继 38/38）。
 TURN 由 `deploy/install.sh` 随部署一起装好（coturn，`use-auth-secret` + 每次通话现签临时凭据），
 并已用 `browser-e2e --relay` 证明媒体确实经中继转发。
 
@@ -198,6 +198,7 @@ A                            signaling                        B
 | B5 | ICE 配置动态下发 | ✅ | 服务端读 `turn_config.json` 注入 `start_call`，前端无需硬编码 |
 | B6 | TURN 中继 | ✅ | coturn 自建，UDP + TCP 双传输；`--relay` 强制中继通过 |
 | B7 | TURN 临时凭据 | ✅ | coturn `use-auth-secret` + REST API：`username="<exp>:<userId>"`、`credential=HMAC-SHA1(secret, username)`，每次通话现签、TTL 可配 |
+| B8 | 屏幕共享 | ✅ | `getDisplayMedia` + `RTCRtpSender.replaceTrack()` 换源，**不重新协商**、画面不断；与摄像头互斥；`track.onended` 处理浏览器自带「停止共享」；状态经 `video_mute.screen` 同步给对端 |
 
 ### 4.3 设备与状态表达（v1.0 ✅）
 
@@ -398,8 +399,8 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 | JWT 跨语言一致性 | `./jwt_selftest tests/jwt_vectors.json` **11/11**（C++ 验 Go 签的令牌） |
 | 信令协议状态机 | `tools/e2e/ws-smoke.js` **24/24**（鉴权超时、凭证类型隔离、座位上限、转发、`bye` 释放座位、TURN 临时凭据按用户签发） |
 | 全栈接线 | `tools/e2e/e2e-fullstack.js` **34/34**（nginx 反代 + Go + PostgreSQL + wss 升级 + 建房/密码/解散） |
-| 真实浏览器通话 | `tools/e2e/browser-e2e.js` **22/22**（Edge 157 + 假摄像头：ICE connected、双向画面、挂断 bye 走通） |
-| TURN 中继 | `browser-e2e.js --relay` **27/27**：强制 `iceTransportPolicy: 'relay'`，两端选中的 `candidate-pair` 都是 `relay` 候选，画面与声音正常；错误凭据 `Cannot complete Allocation` 被拒 |
+| 真实浏览器通话 | `tools/e2e/browser-e2e.js` **33/33**（Edge 157 + 假摄像头：ICE connected、双向画面、屏幕共享切换、挂断 bye 走通） |
+| TURN 中继 | `browser-e2e.js --relay` **38/38**：强制 `iceTransportPolicy: 'relay'`，两端选中的 `candidate-pair` 都是 `relay` 候选，画面与声音正常；错误凭据 `Cannot complete Allocation` 被拒 |
 | 媒体路径 | 同网段 P2P 直连（`host` 候选即打通）；跨网段走 coturn（`use-auth-secret` + 每次通话现签凭据，TTL 7200 秒） |
 
 **仍缺（M1 补）**：

@@ -262,6 +262,27 @@
         .mic-badge.active { display: inline-flex; }
         .mic-badge svg { width: 13px; height: 13px; stroke: #fff; }
 
+        /* ===== Screen Share Badge（本地/远端通用） ===== */
+        .screen-badge {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            display: none;
+            align-items: center;
+            gap: 6px;
+            background: rgba(59, 130, 246, 0.92);
+            backdrop-filter: blur(6px);
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 0.72rem;
+            font-weight: 500;
+            color: #fff;
+            z-index: 5;
+            border: 1px solid rgba(255, 255, 255, 0.14);
+        }
+        .screen-badge.active { display: inline-flex; }
+        .screen-badge svg { width: 13px; height: 13px; stroke: #fff; }
+
         /* ===== Video Overlay ===== */
         .video-overlay {
             position: absolute;
@@ -744,6 +765,14 @@
                     <span>摄像头已关闭</span>
                 </div>
                 <div class="idle-hint" id="localIdleHint">摄像头未开启</div>
+                <div class="screen-badge" id="localScreenBadge">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="3" width="20" height="14" rx="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    <span>正在共享屏幕</span>
+                </div>
                 <div class="video-label" id="localLabel">本地</div>
             </div>
         </div>
@@ -770,6 +799,14 @@
                         <path d="M17 12a7 7 0 0 1-1.83 4.76"/>
                     </svg>
                     <span>对方已静音</span>
+                </div>
+                <div class="screen-badge" id="remoteScreenBadge">
+                    <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="3" width="20" height="14" rx="2"/>
+                        <line x1="8" y1="21" x2="16" y2="21"/>
+                        <line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    <span>对方正在共享屏幕</span>
                 </div>
             </div>
         </div>
@@ -810,6 +847,23 @@
                     <rect x="2" y="5" width="11" height="11" rx="2"/>
                 </svg>
                 <span id="videoLabel">开启摄像头</span>
+            </button>
+
+            <button class="btn btn-control off" id="screenBtn">
+                <!-- Screen Sharing (inactive) -->
+                <svg class="icon-on" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/>
+                    <line x1="8" y1="21" x2="16" y2="21"/>
+                    <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+                <!-- Stop Sharing -->
+                <svg class="icon-off" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2"/>
+                    <line x1="8" y1="21" x2="16" y2="21"/>
+                    <line x1="12" y1="17" x2="12" y2="21"/>
+                    <line x1="4" y1="4" x2="20" y2="16"/>
+                </svg>
+                <span id="screenLabel">共享屏幕</span>
             </button>
         </div>
         <div class="button-row">
@@ -882,6 +936,13 @@
     let isInitiator = false;
     let isPolite = false;       // perfect negotiation：响应方在协商冲突时让步
     let audioSender = null;
+    // 视频轨的 sender。屏幕共享用 replaceTrack 在同一 sender 上换源，
+    // 不新增轨道 = 不触发 SDP 重协商，对方画面会平滑切换（见 CONTEXT.md「屏幕共享」）。
+    let videoSender = null;
+    let cameraTrack = null;     // 摄像头轨，共享屏幕期间被临时替换下来，停止共享时换回
+    let screenStream = null;    // 屏幕采集流（含系统音频的可能性先不做）
+    let screenSharing = false;  // 本端是否正在共享屏幕
+    let remoteScreenSharing = false; // 对方是否正在共享屏幕
     let makingOffer = false;
     let ignoreOffer = false;
     let wsDisconnectedIntentionally = false;
@@ -977,6 +1038,117 @@
     function updateRemoteUI() {
         updateRemoteVideoUI();
         updateRemoteMicUI();
+        $('remoteScreenBadge').classList.toggle('active', inCall && remoteScreenSharing);
+    }
+
+    // ========== 屏幕共享 UI / 状态机 ==========
+
+    // 摄像头与屏幕共享互斥：同一时刻只有一路视频源，心智模型最简单，
+    // 也避免"共享时又去关摄像头"这种自相矛盾的操作。
+    function updateScreenUI() {
+        const btn = $('screenBtn');
+        const label = $('screenLabel');
+        if (screenSharing) {
+            btn.className = 'btn btn-control on';
+            label.textContent = '停止共享';
+            btn.querySelector('.icon-on').style.display = 'block';
+            btn.querySelector('.icon-off').style.display = 'none';
+        } else {
+            btn.className = 'btn btn-control off';
+            label.textContent = '共享屏幕';
+            btn.querySelector('.icon-on').style.display = 'none';
+            btn.querySelector('.icon-off').style.display = 'block';
+        }
+        // 共享期间禁用摄像头按钮：要回摄像头就点「停止共享」
+        $('videoBtn').disabled = screenSharing;
+        $('localScreenBadge').classList.toggle('active', screenSharing);
+        // 共享时本地预览显示屏幕内容，不能叠"摄像头已关闭"遮罩
+        if (screenSharing) {
+            $('localOverlay').classList.remove('active');
+            $('localIdleHint').style.display = 'none';
+            $('localCard').classList.add('connected');
+        } else {
+            updateVideoUI();
+        }
+    }
+
+    function startScreenShare() {
+        if (screenSharing) return;
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+            updateStatus('当前浏览器不支持屏幕共享（需要 HTTPS 或 localhost）', true);
+            return;
+        }
+        navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: false })
+            .then(async (stream) => {
+                const track = stream.getVideoTracks()[0];
+                if (!track) {
+                    stream.getTracks().forEach(t => t.stop());
+                    updateStatus('没有取到屏幕画面', true);
+                    return;
+                }
+                screenStream = stream;
+                screenSharing = true;
+
+                // 关键：用 replaceTrack 换源，而不是 addTrack 新增轨道。
+                // 同 kind 替换不会触发 onnegotiationneeded，对方画面不中断。
+                if (peerConn && videoSender) {
+                    try {
+                        await videoSender.replaceTrack(track);
+                    } catch (e) {
+                        console.error('切换屏幕轨失败', e);
+                    }
+                } else if (peerConn) {
+                    // 从没开过摄像头：这是第一条视频轨，只能 addTrack（会协商一次）
+                    videoSender = peerConn.addTrack(track, stream);
+                }
+
+                // 浏览器自带的「停止共享」浮条被点时，轨道会 ended
+                track.onended = () => stopScreenShare();
+
+                $('localVideo').srcObject = stream;
+                $('localVideo').play().catch(() => { /* 本地预览静音，基本不会被拦 */ });
+                updateScreenUI();
+                sendMediaState();
+                updateStatus('正在共享屏幕');
+            })
+            .catch((e) => {
+                // NotAllowedError = 用户在系统弹窗里点了取消，不算错误
+                if (e && (e.name === 'NotAllowedError' || e.name === 'AbortError')) {
+                    updateStatus(inCall ? '通话中' : '已取消屏幕共享');
+                    return;
+                }
+                showDeviceError(e, '屏幕共享');
+            });
+    }
+
+    // silent=true：结束通话时调用，不再往 ws 发状态（连接可能已经关了）
+    function stopScreenShare(silent) {
+        if (!screenSharing && !screenStream) return;
+        screenSharing = false;
+        if (screenStream) {
+            screenStream.getTracks().forEach((t) => {
+                t.onended = null;   // 先摘掉回调，避免 stop() 触发 onended 递归
+                t.stop();
+            });
+            screenStream = null;
+        }
+        // 换回摄像头轨；没有摄像头就换 null（对方看到"已关闭"）
+        if (peerConn && videoSender) {
+            const back = (videoStarted && cameraTrack) ? cameraTrack : null;
+            videoSender.replaceTrack(back).catch((e) => console.error('恢复摄像头轨失败', e));
+        }
+        $('localVideo').srcObject = localStream;
+        $('localVideo').play().catch(() => {});
+        updateScreenUI();
+        if (!silent) {
+            sendMediaState();
+            updateStatus(inCall ? '通话中' : '已停止共享');
+        }
+    }
+
+    function toggleScreenShare() {
+        if (screenSharing) stopScreenShare(false);
+        else startScreenShare();
     }
 
     // 上报本端媒体状态（视频 + 麦克风）。
@@ -984,7 +1156,7 @@
     // 所以这里可以立即上报，不需要再靠 300ms 延时兜底。
     function sendMediaState() {
         if (!ws || ws.readyState !== WebSocket.OPEN || !inCall) return;
-        ws.send(JSON.stringify({ type: "video_mute", muted: videoMuted }));
+        ws.send(JSON.stringify({ type: "video_mute", muted: videoMuted, screen: screenSharing }));
         ws.send(JSON.stringify({ type: "mic_mute", muted: audioMuted, started: micStarted }));
     }
 
@@ -1034,6 +1206,7 @@
             peerConn = null;
         }
         audioSender = null;
+        videoSender = null;
 
         peerConn = new RTCPeerConnection(ICE_CONFIG);
 
@@ -1043,6 +1216,8 @@
             const sender = peerConn.addTrack(track, localStream);
             if (track.kind === 'audio') {
                 audioSender = sender;
+            } else if (track.kind === 'video') {
+                videoSender = sender;
             }
         });
 
@@ -1265,6 +1440,8 @@
             }
         } else if (data.type === "video_mute") {
             remoteVideoMuted = data.muted === true;
+            // screen 字段由前端自己加，服务端只做原样转发（server.cpp 不解析 video_mute 内容）
+            remoteScreenSharing = data.screen === true;
             updateRemoteUI();
         } else if (data.type === "mic_mute") {
             remoteMicMuted = data.muted === true;
@@ -1347,6 +1524,11 @@
             peerConn = null;
         }
         audioSender = null;
+        videoSender = null;
+
+        // 共享中挂断/被挂断：释放屏幕轨，预览回到摄像头
+        stopScreenShare(true);
+        remoteScreenSharing = false;
 
         $('remoteVideo').srcObject = null;
         $('remoteVideo').muted = false;      // 恢复默认，下一通重新判断要不要静音兜底
@@ -1484,6 +1666,8 @@
     }
 
     async function toggleVideo() {
+        // 共享屏幕期间不允许切摄像头：两者是同一路视频源，先停止共享
+        if (screenSharing) return;
         if (!videoStarted) {
             // 首次开启：获取设备（会弹一次权限请求），通话中则会触发一次重协商
             let stream;
@@ -1494,11 +1678,17 @@
                 return;
             }
             const track = stream.getVideoTracks()[0];
+            cameraTrack = track;
             localStream.addTrack(track);
             videoStarted = true;
             videoMuted = false;
             if (peerConn && inCall) {
-                peerConn.addTrack(track, localStream);
+                if (videoSender) {
+                    // 已有视频 sender（可能是占位的 null 轨）：换源即可，无需重新协商
+                    videoSender.replaceTrack(track).catch(e => console.error("替换视频轨失败:", e));
+                } else {
+                    videoSender = peerConn.addTrack(track, localStream);
+                }
             }
             if (!inCall) updateStatus("摄像头已开启，可创建或加入房间");
         } else {
@@ -1990,6 +2180,7 @@
     $('leaveBtn').onclick = leaveRoom;
     $('micBtn').onclick = toggleMic;
     $('videoBtn').onclick = toggleVideo;
+    $('screenBtn').onclick = toggleScreenShare;
     $('unmuteBtn').onclick = enableRemoteAudio;
     $('logoutBtn').onclick = async () => {
         $('logoutBtn').disabled = true;

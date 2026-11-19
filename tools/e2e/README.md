@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发 | 只需能连到信令端口 | 否 |
 | `e2e-fullstack.js` | 整条链路的接线：nginx 反代、Go 认证服务 + PostgreSQL、wss 升级、建房/密码/解散 | 已按 `deploy/install.sh` 部署 | 否 |
-| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
+| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、屏幕共享（替换视频源不重协商）、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
 
 三者互补，不能互相替代：`ws-smoke` 通过只说明信令状态机对，`browser-e2e` 才说明媒体真的流起来了。
 历史上「远端画面全黑但页面显示通话中」这个 bug 就是 `browser-e2e` 抓出来的，前两层全绿。
@@ -49,6 +49,14 @@ node tools/e2e/browser-e2e.js 192.168.220.128 --relay
 
 同网段下 P2P 必然能通，所以**只有 `--relay` 全绿才能说明 TURN 可用**。想确认"到底走的哪条路"，
 看脚本抬头打印的「强制 TURN 中继」/「P2P 直连」。
+
+### 屏幕共享是怎么测的
+
+headless 里没有屏幕选择器，`getDisplayMedia()` 会直接 reject。脚本注入一个替身：把
+`navigator.mediaDevices.getDisplayMedia` 换成 `getUserMedia({video:true})`（同样产出一条真实视频轨），
+这样能完整验证**页面自己的逻辑**——按钮状态、`replaceTrack` 换源、`signalingState` 不变（证明没重协商）、
+对端 `screen` 标记与角标、停止共享后恢复摄像头。真实屏幕采集属于浏览器能力，用人工演示验证（见
+`docs/demo-script.md`）。
 
 ## 环境变量
 

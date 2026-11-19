@@ -182,6 +182,18 @@ async function attachPage(port) {
       })();`,
     });
   }
+  // headless 里没有真实的屏幕选择器，getDisplayMedia 会直接 reject，测不到页面自己的逻辑。
+  // 这里把它换成 getUserMedia（同样产出一条真实视频轨），用来验证「共享/停止共享」的
+  // 状态流转与 replaceTrack 行为；真实屏幕采集属于浏览器能力，交给人工演示验证。
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      if (!navigator.mediaDevices) return;
+      navigator.mediaDevices.getDisplayMedia = function () {
+        window.__displayCalls = (window.__displayCalls || 0) + 1;
+        return navigator.mediaDevices.getUserMedia({ video: true });
+      };
+    })();`,
+  });
   return cdp;
 }
 
@@ -382,6 +394,39 @@ async function loginFlow(cdp, user, pass, displayName) {
 
     const rvA = await pa.evaluate("({w: document.querySelector('#remoteVideo').videoWidth, h: document.querySelector('#remoteVideo').videoHeight, t: document.querySelector('#remoteVideo').currentTime})");
     ok('A 收到的远端画面是有效分辨率', rvA && rvA.w >= 320 && rvA.h >= 240, rvA);
+
+    console.log('\n-- 屏幕共享（替换视频源，不重新协商）--');
+    // 关键论点：共享走 videoSender.replaceTrack，不新增轨道，所以 SDP 不用重协商，
+    // 对方画面不会中断。这里用 signalingState 和 track id 两个侧面来验证。
+    const sigBefore = await pa.evaluate('peerConn.signalingState');
+    const trackBefore = await pa.evaluate("peerConn.getSenders().find(s => s.track && s.track.kind === 'video').track.id");
+    await click(pa, '#screenBtn');
+    ok('A 点「共享屏幕」后进入共享态（本地角标亮起）',
+      await waitFor(pa, "screenSharing === true && document.querySelector('#localScreenBadge').classList.contains('active')", 15000, 'A 共享态'));
+    ok('共享时摄像头按钮被禁用、按钮文案变成「停止共享」',
+      (await pa.evaluate("document.querySelector('#videoBtn').disabled === true && document.querySelector('#screenLabel').textContent === '停止共享'")) === true);
+    ok('共享时本地预览换成了屏幕轨（不再是摄像头那条）',
+      await waitFor(pa, `(() => { const s = document.querySelector('#localVideo').srcObject; return !!(s && s.getVideoTracks()[0] && s.getVideoTracks()[0].id !== ${JSON.stringify(trackBefore)}); })()`,
+        10000, '本地预览切换'));
+    ok('共享没有触发重新协商（signalingState 保持 stable）',
+      (await pa.evaluate('peerConn.signalingState')) === sigBefore, sigBefore);
+    ok('对端收到 screen 标记并显示「对方正在共享屏幕」',
+      await waitFor(pb, "remoteScreenSharing === true && document.querySelector('#remoteScreenBadge').classList.contains('active')", 15000, 'B 共享角标'));
+    ok('共享期间对端画面仍在（没有被切断）',
+      await waitFor(pb, "document.querySelector('#remoteVideo').videoWidth > 0", 15000, 'B 共享中画面'));
+
+    await click(pa, '#screenBtn');
+    ok('A 点「停止共享」后回到摄像头态',
+      await waitFor(pa, "screenSharing === false && !document.querySelector('#localScreenBadge').classList.contains('active')", 10000, 'A 停止共享'));
+    ok('停止共享后摄像头按钮恢复可用、本地预览回到摄像头轨',
+      await waitFor(pa, `(() => { const s = document.querySelector('#localVideo').srcObject; return document.querySelector('#videoBtn').disabled === false && !!(s && s.getVideoTracks()[0] && s.getVideoTracks()[0].id === ${JSON.stringify(trackBefore)}); })()`,
+        12000, 'A 恢复摄像头'));
+    ok('B 侧「对方正在共享屏幕」角标消失',
+      await waitFor(pb, "remoteScreenSharing === false && !document.querySelector('#remoteScreenBadge').classList.contains('active')", 10000, 'B 角标消失'));
+    ok('停止共享同样没有重新协商',
+      (await pa.evaluate('peerConn.signalingState')) === sigBefore);
+    ok('整个过程只调用了一次 getDisplayMedia（没有重复采集）',
+      (await pa.evaluate('window.__displayCalls')) === 1);
 
     console.log('\n-- 挂断 --');
     await click(pa, '#hangupBtn');

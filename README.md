@@ -46,6 +46,7 @@
 | `docs/implementation-plan-m1.md` | **M1 实施计划**：基础设施改善 + 登录与数据库（开工方案） |
 | `docs/ha-scaling-design.md` | 详细设计：高可用与高并发（分布式化、容量模型、压测与故障演练） |
 | `docs/multiparty-sfu-design.md` | 详细设计：多人通话 / 直播（Mesh→SFU、房间调度、扇出控制、直播分层） |
+| `docs/demo-script.md` | **演示脚本**：答辩/汇报用的 8 分钟流程 + 兜底预案 + 加分材料 |
 
 ## 依赖
 
@@ -407,8 +408,8 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 |---|---|---|
 | `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发（需与服务端相同的 `JWT_SECRET`） | 24/24 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
-| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、挂断 | 22/22（P2P） |
-| `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 27/27 |
+| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、挂断 | 33/33（P2P） |
+| `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 38/38 |
 
 `browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
 加 `--relay` 是验证 TURN 的唯一可信方式：它把页面里的 `RTCPeerConnection` 包一层、强制只收中继候选，
@@ -476,6 +477,9 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 - **Perfect negotiation**：`initiator` 为 impolite 方，冲突时响应方 rollback 让步。
 - **通话中开启新设备**触发一次重协商；关闭不需要。
 - **ICE 恢复**：`disconnected` 持续 5 秒、或 `failed` 时自动 `iceRestart`。
+- **屏幕共享**：与摄像头互斥（同一时刻只有一路视频源）。走 `RTCRtpSender.replaceTrack()` 换源，
+  同 kind 替换**不触发重新协商**，对方画面平滑切换、连接不断；状态通过 `video_mute` 的 `screen` 字段同步
+  （服务端原样转发，不解析内容）。浏览器自带的「停止共享」浮条被点时，`track.onended` 会自动切回摄像头。
 - **信令掉线**：指数退避重连（最多 10 次），重连成功后自动补发 `join_room`；页面 `pagehide` 时主动断开，让对端立刻收到 `bye` 而不是等 TCP 超时。
 
 ## 已知限制
@@ -492,7 +496,7 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
   两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，27 项全过。**跨公网/跨 NAT 前仍要确认**：
   云主机在 NAT 后面必须给 `install.sh` 传 `TURN_PUBLIC_IP`（否则浏览器拿到内网中继地址），
   且安全组要放行 3478 与 49160-49200/udp。
-- 渲染层只做了默认摄像头/麦克风，没有设备选择、屏幕共享、文字聊天、通话质量统计（`getStats`）。
+- 渲染层只做了默认摄像头/麦克风 + 屏幕共享，没有设备选择、文字聊天、通话质量统计（`getStats`）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
 - 服务端房间查找是线性扫描全部房间，房间多了会退化；应改为 `conn → roomId` 索引。
 
