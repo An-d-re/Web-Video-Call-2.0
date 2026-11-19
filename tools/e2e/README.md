@@ -4,9 +4,9 @@
 
 | 脚本 | 验证什么 | 依赖 | 需要浏览器 |
 | --- | --- | --- | --- |
-| `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收 | 只需能连到信令端口 | 否 |
+| `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发 | 只需能连到信令端口 | 否 |
 | `e2e-fullstack.js` | 整条链路的接线：nginx 反代、Go 认证服务 + PostgreSQL、wss 升级、建房/密码/解散 | 已按 `deploy/install.sh` 部署 | 否 |
-| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、挂断 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
+| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
 
 三者互补，不能互相替代：`ws-smoke` 通过只说明信令状态机对，`browser-e2e` 才说明媒体真的流起来了。
 历史上「远端画面全黑但页面显示通话中」这个 bug 就是 `browser-e2e` 抓出来的，前两层全绿。
@@ -33,7 +33,22 @@ node tools/e2e/e2e-fullstack.js 192.168.220.128
 
 # 3) 真实浏览器通话（默认 127.0.0.1，用自签证书所以要放宽 TLS）
 node tools/e2e/browser-e2e.js 192.168.220.128
+
+# 4) 强制走 TURN 中继（验证 coturn 真的在转发媒体）
+node tools/e2e/browser-e2e.js 192.168.220.128 --relay
 ```
+
+### `--relay` 是怎么强制中继的
+
+页面里 `new RTCPeerConnection(...)` 被包了一层：注入的脚本把 `iceTransportPolicy` 改成 `'relay'`，
+于是浏览器只会用 TURN 分配的候选地址，P2P 直连根本不会尝试。然后断言：
+
+- `window.__relayForced === true`（包装确实生效了）；
+- 两端 `connectionState` 都是 `connected`；
+- `getStats()` 里选中的 `candidate-pair`，其 `localCandidate.candidateType === 'relay'`。
+
+同网段下 P2P 必然能通，所以**只有 `--relay` 全绿才能说明 TURN 可用**。想确认"到底走的哪条路"，
+看脚本抬头打印的「强制 TURN 中继」/「P2P 直连」。
 
 ## 环境变量
 
@@ -42,6 +57,7 @@ node tools/e2e/browser-e2e.js 192.168.220.128
 | `JWT_SECRET` | `ws-smoke.js` | 必须和服务端一致。**部署后的服务用的是 `install.sh` 随机生成的密钥**，见 `/opt/webrtc/signaling.env`；不设则用开发默认值，值不对会看到「自签 token 被拒」的连锁失败。 |
 | `EDGE_PATH` | `browser-e2e.js` | 指定浏览器可执行文件（Chromium 内核）。 |
 | `BROWSER_HEADLESS=0` | `browser-e2e.js` | 打开真实窗口，方便肉眼看。默认 headless。 |
+| `BROWSER_RELAY=1` | `browser-e2e.js` | 等价于 `--relay`（强制中继）。 |
 | `NODE_TLS_REJECT_UNAUTHORIZED=0` | `e2e-fullstack.js` | 自签证书时放宽校验（脚本内部请求也传了 `rejectUnauthorized: false`，一般不用设）。 |
 
 ## 几个坑，写在这里省得再踩
@@ -62,3 +78,6 @@ node tools/e2e/browser-e2e.js 192.168.220.128
 - **每次跑前清 profile**：`--user-data-dir` 里残留的 refresh cookie 会让 `/login.html` 直接跳主页，
   于是等不到登录框。脚本已自动清理。
 - **跑完要杀浏览器**：headless 浏览器不随 node 退出，残留进程占着调试端口，下次会接到上一轮的旧页面。
+- **`--relay` 失败先看 TURN 本身**：先用 `turnutils_uclient -u "<过期时间戳>:<id>" -W <secret> -p 3478 -e <ip> -r 3480 <ip>`
+  打一发（`-W` 让它自己算 REST 凭据；注意 `-r` 才是 peer 端口，`-g` 是 DONT_FRAGMENT 标志）。
+  通了说明 coturn 没问题，问题在 `start_call` 下发的 `iceServers` 或防火墙。

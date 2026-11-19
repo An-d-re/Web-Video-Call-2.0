@@ -217,13 +217,25 @@ node e2e-test.js
 
 ## 配置
 
-```bash
-cp turn_config.example.json turn_config.json
-# 编辑 turn_config.json，填入真实的 TURN 地址与凭据
+`turn_config.json` 决定 `start_call` 里下发什么 `iceServers`。**用 `deploy/install.sh` 部署时不用手写**，脚本会装好 coturn 并生成它；手工部署时照 `turn_config.example.json` 抄一份。
+
+两种模式：
+
+```jsonc
+// 动态（推荐）：secret 非空 = 每次通话现签一份临时凭据
+{ "secret": "coturn 的 static-auth-secret", "ttlSeconds": 7200,
+  "iceServers": [ { "urls": "stun:1.2.3.4:3478" },
+                  { "urls": ["turn:1.2.3.4:3478?transport=udp"], "dynamic": true } ] }
+
+// 静态：secret 为空 = iceServers 原样下发（凭据是公开的，仅适合内网）
+{ "secret": "", "iceServers": [ { "urls": "turn:1.2.3.4:3478", "username": "u", "credential": "p" } ] }
 ```
 
+动态模式下，服务端按 coturn 的 **TURN REST API** 规则签发：`username = "<过期时间戳>:<userId>"`、
+`credential = base64(HMAC-SHA1(secret, username))`。凭据过期自动作废，被抄走也只能用到过期为止。
+
 `turn_config.json` 被 `.gitignore` 忽略（历史上曾误提交过明文口令，见「安全注意事项」）。
-`deploy_turn.sh` 跑完会直接打印一份可粘贴的 JSON。
+`deploy_turn.sh` 是老的一键 coturn 脚本（静态模式），跑完会打印一份可粘贴的 JSON。
 
 ## 运行
 
@@ -271,15 +283,18 @@ sudo DATABASE_URL='postgres://webrtc:口令@127.0.0.1:5432/webrtc?sslmode=disabl
      ./deploy/install.sh --server ./server --auth ./auth-bin --static ./static
 ```
 
-`deploy/install.sh` 做七件事，**幂等，可以反复跑**：
+`deploy/install.sh` 做八件事，**幂等，可以反复跑**：
 
 1. 建系统用户 `webrtc`、部署目录 `/opt/webrtc`；
 2. 装两个二进制与 `static/`（仓库里有 `turn_config.json` 也一并装过去）；
 3. 生成 `/opt/webrtc/{auth,signaling}.env`（自动生成 `JWT_SECRET`，权限 600）。**已存在则保留旧密钥**——否则每次重装都会让所有已登录用户掉线；
 4. 生成带 IP SAN 的自签证书 `/etc/nginx/ssl/webrtc.crt`（SAN 自动探测本机网卡；**换了 IP 要删掉证书重跑**）；
 5. 装 nginx 站点并停用 `default`/`video` 等旧站点；`nginx -t` 不过就报错退出、**不重载**，不会把线上打挂；
-6. 跑 `db/migrate.sh`；
-7. 装 systemd unit 并 `enable --now` `webrtc-auth` + `webrtc-signaling`。
+6. 装 **coturn** 并生成 `/opt/webrtc/turn_config.json`（`static-auth-secret` 复用旧值，没有才随机生成；中继端口 49160-49200）；不想装就加 `--no-turn`；
+7. 跑 `db/migrate.sh`；
+8. 装 systemd unit 并 `enable` + **`restart`** `webrtc-auth` + `webrtc-signaling`（必须是 restart：`enable --now` 对已在跑的服务是 no-op，换了二进制也不生效）。
+
+可选环境变量：`TURN_SECRET=<固定密钥>`（重装时保持客户端凭据连续）、`TURN_PUBLIC_IP=1.2.3.4`（云主机写公网 IP，写进 coturn 的 `external-ip`）。
 
 跑完访问 `https://<内网IP>/`。首次会告警自签证书，点「高级 → 继续前往」——**必须点过去**，否则不是安全上下文，`navigator.mediaDevices` 不存在，摄像头打不开。
 
@@ -379,8 +394,8 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
    | 443 | TCP | nginx（WSS + 页面） |
    | 80 | TCP | nginx（跳转到 443） |
    | 8888 | TCP | 仅本机，**不要**对公网开放（nginx 反代） |
-   | 3478 | UDP/TCP | coturn |
-   | 49152-65535 | UDP | coturn 中继端口段 |
+   | 3478 | UDP/TCP | coturn（信令/中继控制） |
+   | 49160-49200 | UDP | coturn 中继端口段（`install.sh` 里的 `min-port`/`max-port`） |
 
    > 云主机的**安全组/网络 ACL** 与主机防火墙是两回事，`deploy_turn.sh` 只能改后者。安全组没放行 3478 和 49152-65535 的表现是「部署全成功，但通话一直连不上」。
 
@@ -390,11 +405,14 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 
 | 命令 | 检查什么 | 上次实测 |
 |---|---|---|
-| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机（需与服务端相同的 `JWT_SECRET`） | 20/20 |
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发（需与服务端相同的 `JWT_SECRET`） | 24/24 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
-| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、挂断 | 22/22 |
+| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、挂断 | 22/22（P2P） |
+| `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 27/27 |
 
 `browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
+加 `--relay` 是验证 TURN 的唯一可信方式：它把页面里的 `RTCPeerConnection` 包一层、强制只收中继候选，
+再断言 `candidate-pair` 的本地候选确实是 `relay` —— 只要有一条走通，就说明 coturn 真的在转发媒体。
 
 ## 信令协议
 
@@ -467,8 +485,13 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
   仍是待办：**WS 侧限流**（登录接口已有）。
 - **房间元数据已持久化**（PostgreSQL），但**实时连接仍在单进程内存里**：信令服务本身还不能水平扩容（见 `docs/ha-scaling-design.md`）。
 - **房间口令是短口令**（4~8 位）+ sha256 加盐，抗离线爆破能力有限；它的定位是"防误入"，账号密码才用 bcrypt。
-- **TURN 凭据是静态的**，且会下发给每个客户端，等同于公开信息。想避免被白用中继，改用 coturn 的 `use-auth-secret` + REST 临时凭据即可（`deploy_turn.sh` 末尾有说明）：凭据几十秒后过期，公开也无所谓，且不需要引入任何用户系统。
-- **TURN 中继还没实测过**：目前所有验证走的都是 P2P 直连（同一网段，`host` 候选就通了），`turn_config.json` 没配，因此 `start_call` 里不带 `iceServers`。跨 NAT（两端在不同网络）**必须先部署 coturn 并验证中继**，否则表现是「通话一直卡在连接中」，而不是报错。
+- **TURN 凭据是临时签发的**（coturn `use-auth-secret` + REST API）：`start_call` 里下发的是
+  `username="<过期时间戳>:<userId>"` + `credential=base64(HMAC-SHA1(secret, username))`，TTL 默认 7200 秒。
+  凭据被抄走也只能用到过期为止，服务器上不需要任何用户表。**静态凭据模式仍然保留**（`secret` 留空），仅供内网调试。
+- **TURN 已实测中继**：`tools/e2e/browser-e2e.js <IP> --relay` 强制 `iceTransportPolicy: 'relay'`，
+  两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，27 项全过。**跨公网/跨 NAT 前仍要确认**：
+  云主机在 NAT 后面必须给 `install.sh` 传 `TURN_PUBLIC_IP`（否则浏览器拿到内网中继地址），
+  且安全组要放行 3478 与 49160-49200/udp。
 - 渲染层只做了默认摄像头/麦克风，没有设备选择、屏幕共享、文字聊天、通话质量统计（`getStats`）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
 - 服务端房间查找是线性扫描全部房间，房间多了会退化；应改为 `conn → roomId` 索引。
@@ -486,7 +509,9 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | 页面能打开，状态栏「WebSocket 连接失败」 | 8888 是否在跑；nginx `/ws` 反代是否配好；有没有 HTTPS 混合内容拦截 |
 | 点击开启摄像头无反应/提示未授权 | 必须是 HTTPS 或 `localhost`（安全上下文），否则 `navigator.mediaDevices` 不存在 |
 | 「房间已满」但房间里没人 | 对端断网留下的半开连接。服务端每 30 秒 ping，连续两次无 pong（最多 60 秒）会自动回收；稍等重试 |
-| 通话建立后很快卡住 | ICE 没打通。查 TURN 是否可达、3478 与 49152-65535 是否放行、`start_call` 日志里有没有注入 ICE 配置 |
+| 通话建立后很快卡住 | ICE 没打通。查 TURN 是否可达、3478 与 49160-49200 是否放行、`start_call` 日志里有没有注入 ICE 配置 |
+| 内网通话正常，跨网段就卡住 | 先跑 `node tools/e2e/browser-e2e.js <IP> --relay`：它强制走中继，能立刻区分「TURN 没部署」还是「TURN 部署了但网络不通」 |
+| `install.sh` 装 coturn 报 dpkg 锁 | `unattended-upgrades` 正在跑（可能卡很久）。`sudo systemctl stop unattended-upgrades` 后重跑；脚本本身会重试 5 次、失败则跳过 TURN 继续装其余部分 |
 | 看不到对方画面、状态一直是「通话中」 | 看服务端日志有没有 `转发 offer/answer/ice`；对端是否只开了麦克风没开摄像头 |
 | 有声音但画面全黑 | 浏览器拦了带声音的自动播放。页面会自动静音把画面播起来，并在画面上显示「🔇 点一下开启声音」，点一下即可。这个兜底是有意做的：headless/静音策略下 `play()` 会 reject，只写 `srcObject` 会永久黑屏 |
 | 服务起不来 | `journalctl -u webrtc-signaling`；常见是 `turn_config.json` 缺失（只是告警，不致命）或 8888 被占用 |

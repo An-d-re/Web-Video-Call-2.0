@@ -33,6 +33,9 @@ const TMP = path.join(ROOT, '.tmp', 'e2e');
 const PROFILES = path.join(TMP, 'profiles');
 const FAKE_VIDEO = path.join(TMP, 'fake-camera.y4m');
 const HEADLESS = process.env.BROWSER_HEADLESS !== '0';
+// 强制走 TURN 中继：两端都只收集中继候选（iceTransportPolicy: 'relay'）。
+// 用来证明"跨网段也能通话"——这是 P2P 直连测不出来的那一半。
+const RELAY = process.argv.includes('--relay') || process.env.BROWSER_RELAY === '1';
 
 const EDGE_CANDIDATES = [
   process.env.EDGE_PATH,
@@ -160,6 +163,25 @@ async function attachPage(port) {
   await cdp.ready;
   await cdp.send('Runtime.enable');
   await cdp.send('Page.enable');
+  if (RELAY) {
+    // 包一层 RTCPeerConnection，让页面自己建的连接一律只收集中继候选。
+    // 必须在导航之前注入，否则页面脚本已经跑了。
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `(() => {
+        const Native = window.RTCPeerConnection;
+        if (!Native) return;
+        function Patched(config, ...rest) {
+          const cfg = Object.assign({}, config || {});
+          cfg.iceTransportPolicy = 'relay';
+          return new Native(cfg, ...rest);
+        }
+        Patched.prototype = Native.prototype;
+        Patched.generateCertificate = Native.generateCertificate;
+        window.RTCPeerConnection = Patched;
+        window.__relayForced = true;
+      })();`,
+    });
+  }
   return cdp;
 }
 
@@ -240,7 +262,7 @@ async function loginFlow(cdp, user, pass, displayName) {
   const uA = 'alice_' + suffix, uB = 'bob_' + suffix;
   const PASS = 'Passw0rd!23';
 
-  console.log(`== 真实浏览器 e2e：${BASE}（${HEADLESS ? 'headless' : '有界面'}）==`);
+  console.log(`== 真实浏览器 e2e：${BASE}（${HEADLESS ? 'headless' : '有界面'}${RELAY ? '，强制 TURN 中继' : '，P2P 直连'}）==`);
   if (!fs.existsSync(FAKE_VIDEO)) makeY4m(FAKE_VIDEO);
 
   const a = await launch('peerA', 9222);
@@ -302,12 +324,40 @@ async function loginFlow(cdp, user, pass, displayName) {
     console.log('\n-- 通话建立（真实 SDP/ICE）--');
     const connA = await waitFor(pa, "peerConn && peerConn.connectionState", 10000, 'A 的 peerConn');
     ok('A 创建了 RTCPeerConnection', !!connA, connA);
-    ok('A 的 ICE 进入 connected（P2P 打通，没走 TURN）',
+    if (RELAY) {
+      ok('强制中继已生效（页面里的 RTCPeerConnection 被包了一层）',
+        (await pa.evaluate('window.__relayForced')) === true &&
+        (await pb.evaluate('window.__relayForced')) === true);
+    }
+    ok(RELAY ? 'A 的 ICE 进入 connected（强制中继）' : 'A 的 ICE 进入 connected（P2P 打通，没走 TURN）',
       await waitFor(pa, "peerConn.iceConnectionState === 'connected' || peerConn.iceConnectionState === 'completed'", 30000, 'A ice'));
     ok('B 的 ICE 进入 connected',
       await waitFor(pb, "peerConn.iceConnectionState === 'connected' || peerConn.iceConnectionState === 'completed'", 30000, 'B ice'));
     ok('A 的 connectionState 是 connected', (await pa.evaluate('peerConn.connectionState')) === 'connected');
     ok('B 的 connectionState 是 connected', (await pb.evaluate('peerConn.connectionState')) === 'connected');
+
+    if (RELAY) {
+      // 只看 iceConnectionState 证明不了中继：直连也会 connected。
+      // 必须看被选中（selected/nominated）的候选对里，本地候选是不是 relay 类型。
+      const pairTypes = `(async () => {
+        const st = await peerConn.getStats();
+        let pair = null;
+        st.forEach((s) => {
+          if (s.type === 'candidate-pair' && (s.selected || (s.nominated && s.state === 'succeeded'))) pair = s;
+        });
+        if (!pair) return 'no-pair';
+        const l = st.get(pair.localCandidateId), r = st.get(pair.remoteCandidateId);
+        return JSON.stringify({
+          local: l && l.candidateType, remote: r && r.candidateType,
+          proto: l && l.protocol, relayProto: l && l.relayProtocol,
+          bytesSent: pair.bytesSent, bytesReceived: pair.bytesReceived,
+        });
+      })()`;
+      const ptA = await waitFor(pa, pairTypes, 20000, 'A 的候选对');
+      const ptB = await waitFor(pb, pairTypes, 20000, 'B 的候选对');
+      ok('A 的候选对本地是中继（媒体经 TURN 转发）', /"local":"relay"/.test(String(ptA)), ptA);
+      ok('B 的候选对本地是中继（媒体经 TURN 转发）', /"local":"relay"/.test(String(ptB)), ptB);
+    }
 
     // 远端画面的两条路径都要认：
     //   a) 浏览器允许自动播放  → remoteVideo 直接有画面

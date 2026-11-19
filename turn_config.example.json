@@ -1,16 +1,17 @@
 {
     "_comment": "复制为 turn_config.json 后填入真实值。turn_config.json 已被 .gitignore 忽略，不要提交。",
-    "_comment2": "更安全的做法是用 coturn 的 REST 临时凭据（use-auth-secret + static-auth-secret），由信令服务按通话生成短时效 username/credential。",
+    "_comment2": "推荐用动态模式：secret 与 coturn 的 static-auth-secret 保持一致，带 \"dynamic\": true 的条目会在每次 start_call 时被注入临时 username/credential（TTL 见 ttlSeconds）。secret 留空则退回静态模式，此时条目需自带 username/credential。",
+    "_comment3": "用 deploy/install.sh 部署时这份文件会自动生成，不需要手工填写。",
+    "secret": "",
+    "ttlSeconds": 7200,
     "iceServers": [
-        { "urls": "stun:stun.qq.com:3478" },
-        { "urls": "stun:stun.miwifi.com:3478" },
+        { "urls": "stun:YOUR_PUBLIC_IP:3478" },
         {
             "urls": [
                 "turn:YOUR_PUBLIC_IP:3478?transport=udp",
                 "turn:YOUR_PUBLIC_IP:3478?transport=tcp"
             ],
-            "username": "YOUR_TURN_USERNAME",
-            "credential": "YOUR_TURN_PASSWORD"
+            "dynamic": true
         }
     ]
 }

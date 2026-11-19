@@ -181,7 +181,27 @@ function get(p) {
     !!s1 && s1.initiator === true && s1.peer && s1.peer.username === 'bob', s1);
   ok('后入房者收到 start_call initiator=false 且 peer=alice',
     !!s2 && s2.initiator === false && s2.peer && s2.peer.username === 'alice', s2);
-  ok('start_call 里没有下发 ICE 配置（无 turn_config.json 属预期）', !!s1 && s1.iceServers === undefined, s1 && s1.iceServers);
+  // ICE 配置：没配 TURN 时不下发（属预期）；配了 TURN 就必须带一次性凭据，
+  // 且两端的用户名不同（凭据按 userId 签发，不是所有人共用一个账号）。
+  const turnEntry = (msg) => ((msg && msg.iceServers) || [])
+    .find((s) => [].concat(s.urls).some((u) => String(u).startsWith('turn:')));
+  const t1 = turnEntry(s1), t2 = turnEntry(s2);
+  if (!turnEntry(s1) && !turnEntry(s2)) {
+    ok('未配置 TURN -> start_call 不带 iceServers（属预期）', !!s1 && s1.iceServers === undefined, s1 && s1.iceServers);
+  } else {
+    ok('start_call 下发了 turn: 服务器', !!t1 && !!t2, { s1: s1 && s1.iceServers, s2: s2 && s2.iceServers });
+    ok('TURN 用户名是"过期时间戳:userId"格式',
+      !!t1 && /^\d{10,}:\d+$/.test(t1.username || '') && /^\d{10,}:\d+$/.test(t2.username || ''),
+      { u1: t1 && t1.username, u2: t2 && t2.username });
+    ok('TURN 凭据按用户区分（两端 username 不同）',
+      !!t1 && !!t2 && t1.username !== t2.username, { u1: t1 && t1.username, u2: t2 && t2.username });
+    ok('TURN 凭据带 credential（非静态密码）',
+      !!t1 && typeof t1.credential === 'string' && t1.credential.length >= 20,
+      t1 && t1.credential);
+    ok('TURN 用户名里的时间戳在未来（未过期）',
+      !!t1 && Number(String(t1.username).split(':')[0]) > Math.floor(Date.now() / 1000),
+      t1 && t1.username);
+  }
 
   // 10. 实时房间列表
   alice.send({ type: 'list_rooms' });

@@ -20,6 +20,7 @@
 #include <ctime>
 
 #include <openssl/sha.h>
+#include <openssl/hmac.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include <openssl/evp.h>
@@ -157,6 +158,21 @@ std::string calcWsAcceptKey(const std::string& key) {
     return base64Encode(hash, SHA_DIGEST_LENGTH);
 }
 
+// ========== HMAC-SHA1 + Base64（coturn 的 TURN REST API 凭据格式）==========
+// coturn 配 use-auth-secret + static-auth-secret 后，校验规则是：
+//   username   = "<过期时间戳(秒)>:<任意标识>"
+//   credential = base64( HMAC-SHA1( static-auth-secret, username ) )
+// 所以这里只需要共享密钥，不用把长期账号发给浏览器。
+std::string hmacSha1Base64(const std::string& key, const std::string& data) {
+    unsigned char digest[EVP_MAX_MD_SIZE];
+    unsigned int digestLen = 0;
+    HMAC(EVP_sha1(),
+         key.data(), static_cast<int>(key.size()),
+         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+         digest, &digestLen);
+    return base64Encode(digest, digestLen);
+}
+
 // ========== 文件操作 ==========
 bool fileExists(const std::string& path) {
     struct stat buffer;
@@ -193,7 +209,57 @@ bool loadTurnConfig(const std::string& path) {
         return false;
     }
     LOG_INFO << "已加载 TURN 配置，包含 " << g_turn_config["iceServers"].size() << " 个 ICE 服务器";
+    if (!g_turn_config.get("secret", "").asString().empty()) {
+        LOG_INFO << "TURN 凭据模式：动态（每次通话签发临时凭据，TTL "
+                 << g_turn_config.get("ttlSeconds", 7200).asInt64() << " 秒）";
+    } else {
+        LOG_WARN << "TURN 凭据模式：静态（turn_config.json 里写死了账号密码）";
+    }
     return true;
+}
+
+// ========== 生成下发给浏览器的 iceServers ==========
+// 两种模式：
+//   1) 静态：iceServers 条目里直接写 username/credential（turn_config.json 里带账号密码）
+//   2) 动态（推荐）：配置里有非空 secret，且条目带 "dynamic": true 时，
+//      按本次通话生成 "<过期时间戳>:<userId>" + HMAC 凭据，随 start_call 一起下发。
+// 动态模式的好处：长期密钥只存在服务器上，浏览器拿到的最多存活 ttlSeconds。
+// 没有任何可用配置时返回 null（调用方据此不下发 iceServers）。
+Json::Value buildIceServers(const ConnAuth& auth) {
+    if (g_turn_config.isNull() || !g_turn_config.isMember("iceServers")) {
+        return Json::Value();  // null
+    }
+    const Json::Value& servers = g_turn_config["iceServers"];
+    if (!servers.isArray() || servers.empty()) {
+        return Json::Value();
+    }
+
+    const std::string secret = g_turn_config.get("secret", "").asString();
+    const bool dynamic = !secret.empty();
+    int64_t ttl = g_turn_config.get("ttlSeconds", 7200).asInt64();
+    if (ttl <= 0) ttl = 7200;
+
+    std::string username;
+    std::string credential;
+    if (dynamic) {
+        const int64_t expireAt = static_cast<int64_t>(::time(nullptr)) + ttl;
+        username = std::to_string(expireAt) + ":" + std::to_string(auth.userId);
+        credential = hmacSha1Base64(secret, username);
+    }
+
+    Json::Value out(Json::arrayValue);
+    for (const auto& s : servers) {
+        Json::Value entry = s;
+        const bool wantDynamic = s.get("dynamic", false).asBool();
+        // dynamic 是给服务端看的开关，不要漏给浏览器
+        entry.removeMember("dynamic");
+        if (dynamic && wantDynamic) {
+            entry["username"] = username;
+            entry["credential"] = credential;
+        }
+        out.append(entry);
+    }
+    return out;
 }
 
 // ========== WebSocket 帧解析（支持分片） ==========
@@ -811,10 +877,13 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
                 startMsg["type"] = "start_call";
                 startMsg["initiator"] = true;
                 startMsg["peer"] = rJson;  // 发给 initiator 的，是对端(responder)的身份
-                if (!g_turn_config.isNull() && g_turn_config.isMember("iceServers")) {
-                    startMsg["iceServers"] = g_turn_config["iceServers"];
+                // 凭据按各自身份生成：动态模式下 username 里带的 userId 就是收件人自己
+                const Json::Value iceForInitiator = buildIceServers(aAuth);
+                const Json::Value iceForResponder = buildIceServers(rAuth);
+                if (!iceForInitiator.isNull()) {
+                    startMsg["iceServers"] = iceForInitiator;
                     LOG_INFO << "start_call 已注入 ICE 配置 ("
-                             << g_turn_config["iceServers"].size() << " 个服务器)";
+                             << iceForInitiator.size() << " 个服务器)";
                 } else {
                     LOG_WARN << "start_call 未注入 ICE 配置（g_turn_config 为空或无 iceServers）";
                 }
@@ -822,6 +891,11 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
 
                 startMsg["initiator"] = false;
                 startMsg["peer"] = aJson;  // 发给 responder 的，是对端(initiator)的身份
+                if (!iceForResponder.isNull()) {
+                    startMsg["iceServers"] = iceForResponder;
+                } else {
+                    startMsg.removeMember("iceServers");
+                }
                 responder->send(wrapWsFrame(startMsg.toStyledString()));
 
                 LOG_INFO << "房间 " << roomId << " 已满，开始通话："
@@ -1025,7 +1099,9 @@ int main() {
     LOG_INFO << "监听端口：" << PORT;
     LOG_INFO << "静态文件目录：./static/";
     if (!g_turn_config.isNull()) {
-        LOG_INFO << "ICE 配置：从 turn_config.json 动态下发";
+        LOG_INFO << "ICE 配置：从 turn_config.json 动态下发"
+                 << (g_turn_config.get("secret", "").asString().empty() ? "（静态凭据）"
+                                                                        : "（临时凭据）");
     }
     LOG_INFO << "WebSocket 心跳：每 30 秒 ping，连续两次无 pong 回收连接";
     LOG_INFO << "鉴权：" << (g_auth_required ? "开启（需在 5 秒内 auth）" : "关闭（匿名模式）");
