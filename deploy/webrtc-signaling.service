@@ -1,0 +1,33 @@
+[Unit]
+Description=WebRTC signaling server (C++/muduo, WebSocket + static files)
+Documentation=https://github.com/An-d-re/Web-Video-Call-2.0
+After=network-online.target
+Wants=network-online.target
+# 信令不连数据库：只验 JWT 签名，所以不依赖 postgresql
+
+[Service]
+Type=simple
+User=webrtc
+Group=webrtc
+# 工作目录决定了两件事：./static 静态文件、./turn_config.json、./webrtc_server.* 日志
+WorkingDirectory=/opt/webrtc
+EnvironmentFile=/opt/webrtc/signaling.env
+ExecStart=/opt/webrtc/server
+Restart=always
+RestartSec=2s
+
+# 监听 8888，正常只应被 nginx 反代；
+# 若不想让内网直连 8888，用防火墙挡掉（见 deploy/install.sh 输出提示）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/webrtc
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

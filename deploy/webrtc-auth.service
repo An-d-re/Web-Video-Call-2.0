@@ -1,0 +1,32 @@
+[Unit]
+Description=WebRTC auth service (Go, JWT + rooms)
+Documentation=https://github.com/An-d-re/Web-Video-Call-2.0
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=webrtc
+Group=webrtc
+WorkingDirectory=/opt/webrtc
+# 全部配置来自环境变量，见 deploy/auth.env.example
+EnvironmentFile=/opt/webrtc/auth.env
+ExecStart=/opt/webrtc/auth
+Restart=always
+RestartSec=2s
+
+# 该服务只监听回环（AUTH_LISTEN=127.0.0.1:8080），由 nginx 反代，不需要任何额外权限
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/opt/webrtc
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

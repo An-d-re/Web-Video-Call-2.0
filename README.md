@@ -31,6 +31,7 @@
 | `tests/jwt_selftest.cpp` | JWT 验签的跨语言自检程序（对照 Go 生成的向量） |
 | `tests/jwt_vectors.json` | 由 `auth/vectors_test.go` 生成，勿手改 |
 | `tools/dev-gateway/` | 本地开发网关（静态托管 + `/api` 反代 + 假信令），仅本地用 |
+| `tools/e2e/` | 三层端到端测试：信令协议冒烟、全栈接线、真实浏览器通话（说明见 `tools/e2e/README.md`） |
 | `auth/` | 认证服务（Go + PostgreSQL）：注册/登录/刷新/登出 |
 | `db/` | 数据库迁移脚本 |
 | `static/index.html` | 前端单页（内联 CSS/JS），含 WebRTC 协商、房间 UI |
@@ -38,7 +39,8 @@
 | `turn_config.json` | ICE 服务器配置，**含明文凭据，不入库**（模板见下） |
 | `turn_config.example.json` | 上者的模板 |
 | `deploy_turn.sh` | coturn 一键部署脚本（需在 Linux 上以 root 运行） |
-| `nginx.conf` | 生产环境 HTTPS + WSS 反代、`/api` 反代与静态托管 |
+| `nginx.conf` | 生产环境 nginx 主配置（只放全局设置，站点在 `deploy/nginx-webrtc.conf`） |
+| `deploy/` | 生产部署：systemd unit、nginx 站点、env 模板、一键脚本 `install.sh` |
 | `CONTEXT.md` | 领域词汇表 |
 | `docs/project-report.md` | **主文档**：项目定位、系统架构、功能清单、技术栈、里程碑 |
 | `docs/implementation-plan-m1.md` | **M1 实施计划**：基础设施改善 + 登录与数据库（开工方案） |
@@ -107,7 +109,9 @@ g++ -std=c++17 -O2 -I. jwt_verify.cpp tests/jwt_selftest.cpp -o jwt_selftest -lj
 ./jwt_selftest tests/jwt_vectors.json
 ```
 
-期望输出 8 条 `PASS`，覆盖：有效 token、过期、错密钥、篡改载荷、`alg=none`、`typ` 不对、结构非法、空串。
+期望输出 **11 条 `PASS`**，覆盖：有效 token、过期、错密钥、篡改载荷、`alg=none`、`typ` 不对、结构非法、空串，以及凭证类型隔离三条（`room_token_valid`、`room_token_as_access`、`access_token_as_room`）。
+
+> 向量文件是由 **Go 侧真实签发函数**生成的，所以这一步同时证明了「C++ 与 Go 两套 JWT 实现互认」——签名算法、base64url 编码、字段名任一处不一致都会失败。
 
 ## auth 服务（Go + PostgreSQL）
 
@@ -246,11 +250,68 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
 
 ## 生产部署
 
-1. **信令服务**：把 `server`、`static/`、`turn_config.json` 放到服务器（如 `/root/webrtc/`），用 systemd 守护。
-   `JWT_SECRET` 走独立的环境文件，避免出现在 unit 文件里：
+### 一键部署（推荐，已在 Ubuntu 24.04 实测）
+
+前置：Ubuntu 22.04/24.04、root、已装 nginx 与 PostgreSQL 并建好库。
+
+```bash
+# 1) 装依赖并编译两个二进制
+sudo apt install -y build-essential cmake libssl-dev libjsoncpp-dev pkg-config nginx postgresql
+cmake -S . -B build && cmake --build build -j$(nproc)          # → ./server
+cd auth && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o ../auth-bin . && cd ..
+#   没有 Go 环境也可以在别的机器上交叉编译：
+#   GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o auth-linux .
+
+# 2) 建角色与库（只做一次）
+sudo -u postgres psql -c "CREATE ROLE webrtc LOGIN PASSWORD '换成强口令'"
+sudo -u postgres psql -c "CREATE DATABASE webrtc OWNER webrtc"
+
+# 3) 一键安装
+sudo DATABASE_URL='postgres://webrtc:口令@127.0.0.1:5432/webrtc?sslmode=disable' \
+     ./deploy/install.sh --server ./server --auth ./auth-bin --static ./static
+```
+
+`deploy/install.sh` 做七件事，**幂等，可以反复跑**：
+
+1. 建系统用户 `webrtc`、部署目录 `/opt/webrtc`；
+2. 装两个二进制与 `static/`（仓库里有 `turn_config.json` 也一并装过去）；
+3. 生成 `/opt/webrtc/{auth,signaling}.env`（自动生成 `JWT_SECRET`，权限 600）。**已存在则保留旧密钥**——否则每次重装都会让所有已登录用户掉线；
+4. 生成带 IP SAN 的自签证书 `/etc/nginx/ssl/webrtc.crt`（SAN 自动探测本机网卡；**换了 IP 要删掉证书重跑**）；
+5. 装 nginx 站点并停用 `default`/`video` 等旧站点；`nginx -t` 不过就报错退出、**不重载**，不会把线上打挂；
+6. 跑 `db/migrate.sh`；
+7. 装 systemd unit 并 `enable --now` `webrtc-auth` + `webrtc-signaling`。
+
+跑完访问 `https://<内网IP>/`。首次会告警自签证书，点「高级 → 继续前往」——**必须点过去**，否则不是安全上下文，`navigator.mediaDevices` 不存在，摄像头打不开。
+
+部署后自查：
+
+```bash
+systemctl status webrtc-auth webrtc-signaling --no-pager
+curl -k https://127.0.0.1/api/health          # {"db":"ok",...}
+journalctl -u webrtc-signaling -f
+node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
+```
+
+### 手动部署（想知道脚本内部在干什么时看）
+
+不想用一键脚本、要自己控制目录布局时，用这些文件：
+
+| 文件 | 装到 | 说明 |
+|---|---|---|
+| `deploy/webrtc-auth.service` | `/etc/systemd/system/` | `User=webrtc`、`EnvironmentFile=/opt/webrtc/auth.env`、`ProtectSystem=strict` |
+| `deploy/webrtc-signaling.service` | 同上 | **不依赖 postgresql**：信令只验签，不连库 |
+| `deploy/nginx-webrtc.conf` | `/etc/nginx/sites-available/webrtc` | 再软链进 `sites-enabled/` |
+| `nginx.conf` | `/etc/nginx/nginx.conf` | 只放全局设置 + `include sites-enabled` |
+| `deploy/auth.env.example` | `/opt/webrtc/auth.env` | 抄一份改值，`chmod 600` |
+| `deploy/signaling.env.example` | `/opt/webrtc/signaling.env` | 与 auth.env 用**同一个** `JWT_SECRET` |
+
+> 老版本的 `nginx.conf` 把 `server` 块直接写死在主配置里，文件中没有 `include /etc/nginx/sites-enabled/*`，因此站点文件放进去**根本不生效**（表现为 `/api/*` 返回主页 HTML）。`install.sh` 检测到这种配置会备份并替换；自己手装时务必检查这一行。
+
+1. **信令服务**：把 `server`、`static/`、`turn_config.json` 放到 `/opt/webrtc/`，用仓库里的 `deploy/webrtc-signaling.service` 守护（下面展开的就是它的内容）。
+   `JWT_SECRET` 走独立的环境文件，**不要**写在 unit 里（`systemctl cat` 任何用户都能看到 unit）：
 
    ```bash
-   # /root/webrtc/signaling.env   （chmod 600）
+   # /opt/webrtc/signaling.env   （chmod 600）
    JWT_SECRET=把这里换成与 auth 服务一致的随机串
    AUTH_REQUIRED=true
    ```
@@ -263,9 +324,9 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
 
    [Service]
    Type=simple
-   WorkingDirectory=/root/webrtc
-   EnvironmentFile=/root/webrtc/signaling.env
-   ExecStart=/root/webrtc/server
+   WorkingDirectory=/opt/webrtc
+   EnvironmentFile=/opt/webrtc/signaling.env
+   ExecStart=/opt/webrtc/server
    Restart=always
    RestartSec=2
 
@@ -274,14 +335,14 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
    ```
 
    ```bash
-   chmod 600 /root/webrtc/signaling.env
+   chmod 600 /opt/webrtc/signaling.env
    systemctl daemon-reload && systemctl enable --now webrtc-signaling
    ```
 
    **auth 服务**用同样的 `JWT_SECRET`：
 
    ```bash
-   # /root/webrtc/auth.env   （chmod 600）
+   # /opt/webrtc/auth.env   （chmod 600）
    DATABASE_URL=postgres://webrtc:密码@127.0.0.1:5432/webrtc?sslmode=disable
    JWT_SECRET=与 signaling.env 完全相同的串
    AUTH_LISTEN=127.0.0.1:8080
@@ -296,9 +357,9 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
 
    [Service]
    Type=simple
-   WorkingDirectory=/root/webrtc/auth
-   EnvironmentFile=/root/webrtc/auth.env
-   ExecStart=/root/webrtc/auth/auth
+   WorkingDirectory=/opt/webrtc
+   EnvironmentFile=/opt/webrtc/auth.env
+   ExecStart=/opt/webrtc/auth
    Restart=always
    RestartSec=2
 
@@ -308,8 +369,8 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
 
 2. **TURN**：`sudo ./deploy_turn.sh`（脚本会问内网/公网 IP、账号口令，并可选放行本机防火墙）。
 
-3. **nginx**：改 `nginx.conf` 里的证书路径和 `server_name`，然后 `nginx -t && systemctl reload nginx`。
-   注意 `nginx.conf` 里 `root /root/webrtc/static;` 与后端自带的静态服务是**两套**，生产上只走 nginx 这一套。
+3. **nginx**：把 `deploy/nginx-webrtc.conf` 装到 `/etc/nginx/sites-available/webrtc` 并软链到 `sites-enabled/`，`nginx -t && systemctl reload nginx`。站点里写的是 `root /opt/webrtc/static;`——**生产只走 nginx 这一套静态托管**，C++ 自带的静态服务只是局域网调试时的方便。
+   注意 `deploy/nginx-webrtc.conf` **不要**写 `http2 on;`：那需要 nginx ≥ 1.25.1，Ubuntu 22.04/24.04 自带的是 1.18/1.24，会直接 `unknown directive` 起不来。WebSocket 走 HTTP/1.1 Upgrade，本来也用不上 HTTP/2。
 
 4. **必须放行**的端口：
 
@@ -322,6 +383,18 @@ export AUTH_REQUIRED=true        # 默认 true；false = 退回匿名模式，�
    | 49152-65535 | UDP | coturn 中继端口段 |
 
    > 云主机的**安全组/网络 ACL** 与主机防火墙是两回事，`deploy_turn.sh` 只能改后者。安全组没放行 3478 和 49152-65535 的表现是「部署全成功，但通话一直连不上」。
+
+### 部署后验证
+
+仓库里带了三层测试，越往后越接近用户真实看到的东西（用法与坑见 `tools/e2e/README.md`）：
+
+| 命令 | 检查什么 | 上次实测 |
+|---|---|---|
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机（需与服务端相同的 `JWT_SECRET`） | 20/20 |
+| `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
+| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、挂断 | 22/22 |
+
+`browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
 
 ## 信令协议
 
@@ -395,6 +468,7 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 - **房间元数据已持久化**（PostgreSQL），但**实时连接仍在单进程内存里**：信令服务本身还不能水平扩容（见 `docs/ha-scaling-design.md`）。
 - **房间口令是短口令**（4~8 位）+ sha256 加盐，抗离线爆破能力有限；它的定位是"防误入"，账号密码才用 bcrypt。
 - **TURN 凭据是静态的**，且会下发给每个客户端，等同于公开信息。想避免被白用中继，改用 coturn 的 `use-auth-secret` + REST 临时凭据即可（`deploy_turn.sh` 末尾有说明）：凭据几十秒后过期，公开也无所谓，且不需要引入任何用户系统。
+- **TURN 中继还没实测过**：目前所有验证走的都是 P2P 直连（同一网段，`host` 候选就通了），`turn_config.json` 没配，因此 `start_call` 里不带 `iceServers`。跨 NAT（两端在不同网络）**必须先部署 coturn 并验证中继**，否则表现是「通话一直卡在连接中」，而不是报错。
 - 渲染层只做了默认摄像头/麦克风，没有设备选择、屏幕共享、文字聊天、通话质量统计（`getStats`）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
 - 服务端房间查找是线性扫描全部房间，房间多了会退化；应改为 `conn → roomId` 索引。
@@ -414,4 +488,5 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | 「房间已满」但房间里没人 | 对端断网留下的半开连接。服务端每 30 秒 ping，连续两次无 pong（最多 60 秒）会自动回收；稍等重试 |
 | 通话建立后很快卡住 | ICE 没打通。查 TURN 是否可达、3478 与 49152-65535 是否放行、`start_call` 日志里有没有注入 ICE 配置 |
 | 看不到对方画面、状态一直是「通话中」 | 看服务端日志有没有 `转发 offer/answer/ice`；对端是否只开了麦克风没开摄像头 |
+| 有声音但画面全黑 | 浏览器拦了带声音的自动播放。页面会自动静音把画面播起来，并在画面上显示「🔇 点一下开启声音」，点一下即可。这个兜底是有意做的：headless/静音策略下 `play()` 会 reject，只写 `srcObject` 会永久黑屏 |
 | 服务起不来 | `journalctl -u webrtc-signaling`；常见是 `turn_config.json` 缺失（只是告警，不致命）或 8888 被占用 |

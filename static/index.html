@@ -206,6 +206,26 @@
             display: block;
         }
         #localVideo { transform: scaleX(-1); }
+        /* 浏览器拦下"带声音的自动播放"时，先把画面静音播起来，再让用户点一下开声音。
+           不这么做的话 <video> 会永远停在 paused：画面全黑，但状态栏写着「通话中」。 */
+        .unmute-btn {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            padding: 10px 18px;
+            border-radius: 999px;
+            border: 1px solid var(--border);
+            background: rgba(0, 0, 0, 0.72);
+            color: #fff;
+            font-size: 14px;
+            font-family: inherit;
+            cursor: pointer;
+            display: none;
+            z-index: 6;
+        }
+        .unmute-btn.show { display: block; }
+        .unmute-btn:hover { border-color: var(--orange); }
         .video-label {
             position: absolute;
             bottom: 12px;
@@ -739,6 +759,7 @@
                     <span>对方已关闭摄像头</span>
                 </div>
                 <div class="idle-hint" id="remoteIdleHint">等待加入房间...</div>
+                <button class="unmute-btn" id="unmuteBtn" type="button">🔇 点一下开启声音</button>
                 <div class="video-label" id="remoteLabel">对方</div>
                 <div class="mic-badge" id="remoteMicBadge">
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -855,6 +876,7 @@
     let videoStarted = false;   // 是否已获取过摄像头设备
     let remoteVideoMuted = false;
     let remoteHasVideo = false; // 对方是否发来过视频轨道
+    let remoteAudioUnmuted = false; // 用户点过「开启声音」后，重协商不要再静音兜底
     let remoteMicMuted = false;    // 对方当前是否停止发送音频
     let remoteMicStarted = false;  // 对方是否获取过麦克风设备（区分"未开启"与"已关闭"）
     let isInitiator = false;
@@ -969,6 +991,43 @@
     // 房间号现在由服务端生成（见 auth 服务的 generateRoomID），前端不再自己造号。
 
     // ========== WebRTC ==========
+
+    // 挂载远端流。autoplay 属性单独靠不住：
+    // 带声音的自动播放会被浏览器拦截（要求"用户手势"），失败只是 reject 一个 promise，
+    // 元素从此停在 paused——画面全黑、状态却显示「通话中」，线上极难排查。
+    // 兜底策略：静音重播（静音一定能播），再显示一个"点一下开启声音"的按钮。
+    //
+    // remoteAudioUnmuted：对端每次重新协商（开摄像头、静音切换）都会再触发 ontrack，
+    // 如果每次都重新走静音兜底，用户刚点开的声音会被立刻静音回去。点过一次就一直算"要声音"。
+    async function attachRemoteStream(stream) {
+        const v = $('remoteVideo');
+        v.srcObject = stream;
+        if (remoteAudioUnmuted) {
+            v.muted = false;
+            $('unmuteBtn').classList.remove('show');
+            v.play().catch((e) => console.warn('远端恢复播放失败', e));
+            return;
+        }
+        try {
+            await v.play();
+            $('unmuteBtn').classList.remove('show');
+        } catch (e) {
+            console.warn('远端自动播放被拦下，先静音播放', e);
+            v.muted = true;
+            try { await v.play(); } catch (_) { /* 还是失败就先放着，用户点按钮会再试 */ }
+            $('unmuteBtn').classList.add('show');
+        }
+    }
+
+    // 用户点「点一下开启声音」：之后这条通话再也不做静音兜底
+    function enableRemoteAudio() {
+        remoteAudioUnmuted = true;
+        const v = $('remoteVideo');
+        v.muted = false;
+        $('unmuteBtn').classList.remove('show');
+        v.play().catch((e) => console.warn('恢复声音失败', e));
+    }
+
     function initPeerConnection() {
         if (peerConn) {
             peerConn.close();
@@ -1002,11 +1061,12 @@
             }
         };
 
+        // 远端流统一交给模块作用域的 attachRemoteStream（见文件上方，含自动播放兜底）
         peerConn.ontrack = (event) => {
             if (event.track.kind === 'video') {
                 remoteHasVideo = true;
             }
-            $('remoteVideo').srcObject = event.streams[0] || new MediaStream([event.track]);
+            attachRemoteStream(event.streams[0] || new MediaStream([event.track]));
             $('remoteCard').classList.add('connected');
             updateRemoteVideoUI();
             updateStatus("通话中");
@@ -1289,6 +1349,9 @@
         audioSender = null;
 
         $('remoteVideo').srcObject = null;
+        $('remoteVideo').muted = false;      // 恢复默认，下一通重新判断要不要静音兜底
+        $('unmuteBtn').classList.remove('show');
+        remoteAudioUnmuted = false;
         $('hangupBtn').disabled = true;
         $('remoteCard').classList.remove('connected');
         document.title = "影音视界 · 房间视频通话";
@@ -1927,6 +1990,7 @@
     $('leaveBtn').onclick = leaveRoom;
     $('micBtn').onclick = toggleMic;
     $('videoBtn').onclick = toggleVideo;
+    $('unmuteBtn').onclick = enableRemoteAudio;
     $('logoutBtn').onclick = async () => {
         $('logoutBtn').disabled = true;
         await Auth.logout();
