@@ -48,7 +48,7 @@
 | `docs/ha-scaling-design.md` | 详细设计：高可用与高并发（分布式化、容量模型、压测与故障演练） |
 | `docs/multiparty-sfu-design.md` | 详细设计：多人通话 / 直播（Mesh→SFU、房间调度、扇出控制、直播分层） |
 | `docs/demo-script.md` | **演示脚本**：答辩/汇报用的 8 分钟流程 + 兜底预案 + 加分材料 |
-| `docs/loadtest-report.md` | **压测报告**：方法、四组场景数据、Nagle 40ms 等三个发现、容量推算 |
+| `docs/loadtest-report.md` | **压测报告**：零基础入门（看哪些参数、用什么工具、怎么做）+ 四组场景数据、Nagle 40ms 等三个发现、容量推算 + 手把手复现 |
 
 ## 依赖
 
