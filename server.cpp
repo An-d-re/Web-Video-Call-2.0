@@ -1,5 +1,6 @@
 #include <muduo/net/TcpServer.h>
 #include <muduo/net/EventLoop.h>
+#include <muduo/net/Channel.h>
 #include <muduo/base/Logging.h>
 #include <muduo/base/LogFile.h>
 #include <muduo/base/AsyncLogging.h>
@@ -21,6 +22,8 @@
 #include <ctime>
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
+#include <signal.h>
 
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
@@ -54,12 +57,35 @@ struct ConnAuth {
     std::string username;
     std::string displayName;
     int64_t deadlineMs = 0;  // 未认证时的截止时刻（0 = 不设限）
+
+    // 当前所在房间的缓存索引。g_rooms 才是唯一真相，这里只用来把
+    // "遍历所有房间找这条连接" 从 O(房间数) 降到 O(1)。
+    // 查表后仍会校验成员是否真的在房间里，对不上就退化为遍历并打 WARN，
+    // 所以这里写漏了只会变慢，不会出现"人在房间里却找不到"。
+    std::string roomId;
+
+    // 每连接令牌桶状态（限流用，见 AllowMessage）
+    double rateTokens = 0;
+    int64_t rateRefillMs = 0;
 };
 
-// 加锁顺序约定：允许 g_rooms_mutex -> g_auth_mutex，
-// 禁止反向（持有 g_auth_mutex 时不得再去取 g_rooms_mutex），否则可能死锁。
-std::unordered_map<TcpConnectionPtr, ConnAuth> g_auth;
-std::mutex g_auth_mutex;
+// 身份表按连接地址分片：每条消息都要读一次身份（GetAuth）和一次令牌桶
+// （AllowMessage），单表单锁在 setThreadNum(4) 下会退化成全局串行点——压测里
+// 表现为"转发延迟降了但 CPU 没降"。分片后 16 条连接才共用一把锁。
+const int kAuthShards = 16;
+struct AuthShard {
+    std::mutex mutex;
+    std::unordered_map<TcpConnectionPtr, ConnAuth> map;
+};
+AuthShard g_auth_shards[kAuthShards];
+
+// 加锁顺序约定：允许 g_rooms_mutex -> 某个分片锁，
+// 禁止反向（持有分片锁时不得再去取 g_rooms_mutex），否则可能死锁。
+AuthShard& ShardOf(const TcpConnectionPtr& conn) {
+    // 右移 4 位：malloc 返回的地址低位固定，直接取模会严重倾斜
+    const size_t h = std::hash<const void*>()(conn.get()) >> 4;
+    return g_auth_shards[h % kAuthShards];
+}
 
 int64_t NowMs() {
     using namespace std::chrono;
@@ -68,9 +94,10 @@ int64_t NowMs() {
 
 // 读取连接的身份；未认证返回 false。
 bool GetAuth(const TcpConnectionPtr& conn, ConnAuth* out) {
-    std::lock_guard<std::mutex> lock(g_auth_mutex);
-    auto it = g_auth.find(conn);
-    if (it == g_auth.end() || !it->second.authenticated) return false;
+    AuthShard& shard = ShardOf(conn);
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    auto it = shard.map.find(conn);
+    if (it == shard.map.end() || !it->second.authenticated) return false;
     if (out) *out = it->second;
     return true;
 }
@@ -93,11 +120,88 @@ Json::Value GuestJson() {
     return v;
 }
 
+// ========== 每连接限流（令牌桶）==========
+// 目的：一条连接狂刷消息既能把服务端 CPU 打满，也能靠高频转发占满对端带宽。
+// 阈值依据：正常通话的峰值约 10 条/秒（ICE 4/s + 静音状态 0.4/s），
+// 这里给 60 条/秒、突发 120，留了 6 倍余量，不会误伤正常客户端。
+const double kRatePerSec = 60.0;
+const double kRateBurst = 120.0;
+
+// 返回 false 表示超限。令牌桶状态挂在 ConnAuth 上，跟身份表共用同一个分片锁，
+// 所以不新增锁——这也是把身份表分片的原因之一。
+bool AllowMessage(const TcpConnectionPtr& conn) {
+    const int64_t now = NowMs();
+    AuthShard& shard = ShardOf(conn);
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    auto it = shard.map.find(conn);
+    if (it == shard.map.end()) return true;  // 握手刚完成、还没登记，放行
+    ConnAuth& a = it->second;
+    if (a.rateRefillMs == 0) {  // 第一次：装满令牌
+        a.rateRefillMs = now;
+        a.rateTokens = kRateBurst;
+    }
+    const double elapsedSec = static_cast<double>(now - a.rateRefillMs) / 1000.0;
+    if (elapsedSec > 0) {
+        a.rateTokens += elapsedSec * kRatePerSec;
+        if (a.rateTokens > kRateBurst) a.rateTokens = kRateBurst;
+        a.rateRefillMs = now;
+    }
+    if (a.rateTokens < 1.0) return false;
+    a.rateTokens -= 1.0;
+    return true;
+}
+
 // 房间管理：roomId -> 该房间内的连接列表（最多2人）
 // 注意：这里只有"运行时状态"（谁现在连着）。房间是否存在、标题、密码
 // 全部在 PostgreSQL 里，由 auth 服务负责；信令服务只认 roomToken。
 std::unordered_map<std::string, std::vector<TcpConnectionPtr>> g_rooms;
 std::mutex g_rooms_mutex;
+
+// 单条连接最多允许积压多少"还没发出去"的字节。超过就判定为读得太慢的客户端，
+// 直接断开——否则对方不读、我们还在往里塞，内存会随慢客户端无限增长。
+const size_t kSlowClientBytes = 256 * 1024;
+
+// 在持 g_rooms_mutex 的前提下，找到 conn 所在房间的成员列表。
+// 走 ConnAuth.roomId 缓存（O(1)）；缓存缺失或与实际不一致时退化为遍历并告警。
+// 索引只是加速手段，g_rooms 始终是唯一真相。
+std::vector<TcpConnectionPtr>* RoomMembersLocked(const TcpConnectionPtr& conn,
+                                                 std::string* outRoomId) {
+    std::string cached;
+    {
+        AuthShard& shard = ShardOf(conn);
+        std::lock_guard<std::mutex> lock(shard.mutex);  // 锁序：rooms -> 分片，允许
+        auto it = shard.map.find(conn);
+        if (it != shard.map.end()) cached = it->second.roomId;
+    }
+    if (!cached.empty()) {
+        auto it = g_rooms.find(cached);
+        if (it != g_rooms.end() &&
+            std::find(it->second.begin(), it->second.end(), conn) != it->second.end()) {
+            if (outRoomId) *outRoomId = cached;
+            return &it->second;
+        }
+    }
+    for (auto& kv : g_rooms) {
+        if (std::find(kv.second.begin(), kv.second.end(), conn) != kv.second.end()) {
+            if (!cached.empty()) {
+                LOG_WARN << "房间索引与实际不一致（缓存=" << cached << "，实际=" << kv.first
+                         << "），本次退化为遍历";
+            }
+            if (outRoomId) *outRoomId = kv.first;
+            return &kv.second;
+        }
+    }
+    return nullptr;
+}
+
+// 更新"连接当前在哪个房间"的缓存。调用方必须已持 g_rooms_mutex（锁序 rooms -> 分片）。
+// 只更新已存在的条目，不新建：新建会让已断开的连接在身份表里复活。
+void SetConnRoomLocked(const TcpConnectionPtr& conn, const std::string& roomId) {
+    AuthShard& shard = ShardOf(conn);
+    std::lock_guard<std::mutex> lock(shard.mutex);
+    auto it = shard.map.find(conn);
+    if (it != shard.map.end()) it->second.roomId = roomId;
+}
 
 // 客户端挂断状态：记录已处理过 bye 的连接，防止重复处理
 std::set<TcpConnectionPtr> g_bye_processed;
@@ -205,6 +309,10 @@ std::string parseHttpPath(const std::string& req) {
 // 采样接口（GET /stats）才去读 map 的大小、读 /proc，这些都不在消息路径上。
 // STATS_TOKEN 未配置时只允许 loopback 访问；配置后必须带 ?token= 才返回数据。
 std::string g_stats_token;
+// 是否把消息原文（SDP / ICE 候选 / 状态）打进日志。
+// 默认关：一是热路径上每条消息都拼一次 payload 日志很贵，二是 SDP 里带着
+// 内网 IP 和候选地址，没必要长期留在磁盘上。排查时用 LOG_PAYLOAD=1 重启打开。
+bool g_log_payload = false;
 const int64_t g_startedAtSec = static_cast<int64_t>(::time(nullptr));
 
 enum MsgKind {
@@ -218,7 +326,7 @@ std::atomic<uint64_t> g_msg_count[kMsgKindCount];
 
 enum ErrKind {
     kErrAuthFail = 0, kErrAuthTimeout, kErrRoomFull, kErrInvalidRoomToken,
-    kErrBadJson, kErrKindCount
+    kErrBadJson, kErrRateLimited, kErrSlowClient, kErrKindCount
 };
 std::atomic<uint64_t> g_err_count[kErrKindCount];
 
@@ -380,9 +488,9 @@ Json::Value statsJson() {
         wsCount = g_ws_clients.size();
     }
     size_t authedCount = 0;
-    {
-        std::lock_guard<std::mutex> lock(g_auth_mutex);
-        for (const auto& kv : g_auth) {
+    for (int i = 0; i < kAuthShards; ++i) {
+        std::lock_guard<std::mutex> lock(g_auth_shards[i].mutex);
+        for (const auto& kv : g_auth_shards[i].map) {
             if (kv.second.authenticated) ++authedCount;
         }
     }
@@ -413,7 +521,8 @@ Json::Value statsJson() {
     }
 
     static const char* kErrNames[kErrKindCount] = {
-        "auth_fail", "auth_timeout", "room_full", "invalid_room_token", "bad_json"};
+        "auth_fail", "auth_timeout", "room_full", "invalid_room_token", "bad_json",
+        "rate_limited", "slow_client"};
     for (int i = 0; i < kErrKindCount; ++i) {
         root["errors"][kErrNames[i]] = static_cast<Json::UInt64>(
             g_err_count[i].load(std::memory_order_relaxed));
@@ -702,28 +811,23 @@ void sendPing(const TcpConnectionPtr& conn) {
 // ========== 辅助函数：从房间中移除连接 ==========
 TcpConnectionPtr removeFromRoom(const TcpConnectionPtr& conn) {
     std::lock_guard<std::mutex> lock(g_rooms_mutex);
-    for (auto it = g_rooms.begin(); it != g_rooms.end(); ++it) {
-        auto& clients = it->second;
-        auto pos = std::find(clients.begin(), clients.end(), conn);
-        if (pos != clients.end()) {
-            clients.erase(pos);
-            TcpConnectionPtr other = nullptr;
-            if (!clients.empty()) {
-                other = clients[0];
-            }
-            if (clients.empty()) {
-                // 房间"是否存在"由数据库负责，内存里这个空壳可以立刻回收
-                std::string deletedRoom = it->first;  // 先保存，erase后it失效
-                g_rooms.erase(it);
-                LOG_INFO << "房间 " << deletedRoom << " 已空，回收运行时状态";
-            } else {
-                LOG_INFO << "客户端离开房间 " << it->first
-                         << "，房间仍有 " << clients.size() << " 人（等待新客户端）";
-            }
-            return other;
-        }
+    std::string roomId;
+    std::vector<TcpConnectionPtr>* clients = RoomMembersLocked(conn, &roomId);
+    if (!clients) return nullptr;
+
+    clients->erase(std::find(clients->begin(), clients->end(), conn));
+    SetConnRoomLocked(conn, "");  // 清掉索引缓存
+
+    TcpConnectionPtr other = clients->empty() ? nullptr : (*clients)[0];
+    if (clients->empty()) {
+        // 房间"是否存在"由数据库负责，内存里这个空壳可以立刻回收
+        g_rooms.erase(roomId);
+        LOG_INFO << "房间 " << roomId << " 已空，回收运行时状态";
+    } else {
+        LOG_INFO << "客户端离开房间 " << roomId
+                 << "，房间仍有 " << clients->size() << " 人（等待新客户端）";
     }
-    return nullptr;
+    return other;
 }
 
 // ========== 连接回调 ==========
@@ -750,10 +854,15 @@ void onConnection(const TcpConnectionPtr& conn) {
             std::lock_guard<std::mutex> lock(g_heartbeat_mutex);
             g_pong_pending.erase(conn);
         }
+        // 先从房间移除，并通知对方。
+        // 必须放在清理身份表之前：房间索引（ConnAuth.roomId）就存在身份表里，
+        // 先擦掉它就只能退化回"遍历所有房间"。
+        TcpConnectionPtr peer = removeFromRoom(conn);
         // 清理鉴权状态
         {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            g_auth.erase(conn);
+            AuthShard& shard = ShardOf(conn);
+            std::lock_guard<std::mutex> lock(shard.mutex);
+            shard.map.erase(conn);
         }
         // 清理帧分片缓冲
         {
@@ -765,8 +874,6 @@ void onConnection(const TcpConnectionPtr& conn) {
             std::lock_guard<std::mutex> lock(g_raw_buffer_mutex);
             g_raw_buffer.erase(conn);
         }
-        // 从房间移除，并通知对方
-        TcpConnectionPtr peer = removeFromRoom(conn);
         if (peer && peer->connected()) {
             bool peerHasBye = false;
             {
@@ -792,27 +899,19 @@ void onConnection(const TcpConnectionPtr& conn) {
 TcpConnectionPtr removeFromOtherRooms(const TcpConnectionPtr& conn,
                                       const std::string& keepRoomId) {
     std::lock_guard<std::mutex> lock(g_rooms_mutex);
-    for (auto it = g_rooms.begin(); it != g_rooms.end();) {
-        if (it->first == keepRoomId) {
-            ++it;
-            continue;
-        }
-        auto& clients = it->second;
-        auto pos = std::find(clients.begin(), clients.end(), conn);
-        if (pos == clients.end()) {
-            ++it;
-            continue;
-        }
-        std::string leftRoom = it->first;
-        clients.erase(pos);
-        TcpConnectionPtr other = clients.empty() ? nullptr : clients[0];
-        LOG_INFO << "连接离开房间 " << leftRoom << "（切换到房间 " << keepRoomId << "）";
-        if (clients.empty()) {
-            g_rooms.erase(it);
-        }
-        return other;
+    std::string roomId;
+    std::vector<TcpConnectionPtr>* clients = RoomMembersLocked(conn, &roomId);
+    if (!clients || roomId == keepRoomId) return nullptr;
+
+    clients->erase(std::find(clients->begin(), clients->end(), conn));
+    SetConnRoomLocked(conn, "");
+
+    TcpConnectionPtr other = clients->empty() ? nullptr : (*clients)[0];
+    LOG_INFO << "连接离开房间 " << roomId << "（切换到房间 " << keepRoomId << "）";
+    if (clients->empty()) {
+        g_rooms.erase(roomId);
     }
-    return nullptr;
+    return other;
 }
 
 // ========== 下行消息辅助 ==========
@@ -826,7 +925,7 @@ void sendJson(const TcpConnectionPtr& conn, const Json::Value& msg) {
 // 避免乐观更新导致的"界面上已进房、服务端其实没进"。
 // inCall=true 表示房间里已经凑满 2 人（通话正在进行），
 // 客户端据此保持"通话中"，而不是把状态打回"等待对方"。
-// 注意：调用点在 g_rooms_mutex 之下，这里会再取 g_auth_mutex（符合约定的加锁顺序）。
+// 注意：调用点在 g_rooms_mutex 之下，这里会再取身份分片锁（符合约定的加锁顺序）。
 void sendJoined(const TcpConnectionPtr& conn, const std::string& roomId,
                 size_t peerCount, bool inCall) {
     Json::Value ack;
@@ -886,8 +985,9 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             }
             // 开启鉴权倒计时：5 秒内必须发出 auth，否则被定时器回收
             if (g_auth_required) {
-                std::lock_guard<std::mutex> lock(g_auth_mutex);
-                ConnAuth& st = g_auth[conn];
+                AuthShard& shard = ShardOf(conn);
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                ConnAuth& st = shard.map[conn];
                 st.deadlineMs = NowMs() + kAuthTimeoutMs;
             }
         } else {
@@ -989,7 +1089,11 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
 
         if (decoded.empty()) continue;  // 控制帧或分片等待中
 
-        LOG_INFO << "收到消息：" << decoded;
+        if (g_log_payload) {
+            LOG_INFO << "收到消息：" << decoded;
+        } else {
+            LOG_DEBUG << "收到 ws 消息，长度=" << decoded.size();
+        }
 
         Json::Value root;
         Json::Reader reader;
@@ -1000,6 +1104,17 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
         }
         std::string type = root.get("type", "").asString();
         g_msg_count[MsgKindOf(type)].fetch_add(1, std::memory_order_relaxed);
+
+        // 限流：超过令牌桶就断开。放在解析出 type 之后，这样 /stats 的 messages
+        // 计数仍能如实反映"对方在刷什么"，便于事后判断是客户端 bug 还是攻击。
+        if (!AllowMessage(conn)) {
+            LOG_WARN << "连接 " << conn->peerAddress().toIpPort()
+                     << " 消息频率超限（" << type << "），断开";
+            g_err_count[kErrRateLimited].fetch_add(1, std::memory_order_relaxed);
+            sendError(conn, "rate_limited", "消息发送过于频繁");
+            conn->shutdown();
+            continue;
+        }
 
         // ---------- 鉴权 ----------
         if (type == "auth") {
@@ -1024,8 +1139,9 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             }
 
             {
-                std::lock_guard<std::mutex> lock(g_auth_mutex);
-                ConnAuth& st = g_auth[conn];
+                AuthShard& shard = ShardOf(conn);
+                std::lock_guard<std::mutex> lock(shard.mutex);
+                ConnAuth& st = shard.map[conn];
                 st.authenticated = true;
                 st.userId = claims.sub;
                 st.username = claims.username;
@@ -1147,6 +1263,7 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
                 continue;
             }
             clients.push_back(conn);
+            SetConnRoomLocked(conn, roomId);  // 记进索引，转发/离开就不用再遍历所有房间
             LOG_INFO << "客户端 " << conn->peerAddress().toIpPort()
                      << " 加入房间 " << roomId << "，当前人数 " << clients.size();
             sendJoined(conn, roomId, clients.size(), clients.size() >= 2);
@@ -1195,36 +1312,51 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
 
         if (type == "offer" || type == "answer" || type == "ice" ||
             type == "video_mute" || type == "mic_mute") {
-            // 转发耗时：找对端（线性扫描房间）+ 组帧 + 投递。
-            // 注意它包含当前那条 "转发 xx 长度=..." 的日志开销，属于现状基线，
-            // 阶段二把 payload 日志降级后这个数字应该明显下降。
+            // 转发耗时：找对端（走房间索引，O(1)）+ 组帧 + 投递。
+            // 注意它包含日志开销，属于现状基线；LOG_PAYLOAD 关掉后这个数字应明显下降。
             LatencyTimer forwardTimer(g_lat_forward);
-            std::lock_guard<std::mutex> lock(g_rooms_mutex);
             TcpConnectionPtr target = nullptr;
-            for (auto& kv : g_rooms) {
-                auto& clients = kv.second;
-                if (std::find(clients.begin(), clients.end(), conn) != clients.end()) {
-                    for (auto& c : clients) {
+            {
+                std::lock_guard<std::mutex> lock(g_rooms_mutex);
+                std::string roomId;
+                std::vector<TcpConnectionPtr>* clients = RoomMembersLocked(conn, &roomId);
+                if (clients) {
+                    for (auto& c : *clients) {
                         if (c != conn) {
                             target = c;
                             break;
                         }
                     }
-                    break;
                 }
             }
-            if (target && target->connected()) {
-                LOG_INFO << "转发 " << type << " 长度=" << decoded.size()
-                        << " 内容预览: " << decoded.substr(0, std::min(decoded.size(), (size_t)100));
-                std::string frameData = wrapWsFrame(decoded);
-                if (frameData.empty()) {
-                    LOG_ERROR << "wrapWsFrame 生成空帧，丢弃消息，原始数据长度=" << decoded.size();
-                } else {
-                    target->send(frameData);
-                    LOG_INFO << "转发 " << type << " 成功，帧长度=" << frameData.size();
-                }
-            } else {
+            if (!target || !target->connected()) {
                 LOG_WARN << "未找到配对客户端，丢弃消息";
+                continue;
+            }
+            // 背压：对端积压太多说明它读得太慢（或者连接已经半死不活）。
+            // 继续往里塞只会让服务端内存跟着涨，所以直接断开它。
+            const size_t backlog = target->outputBuffer()->readableBytes();
+            if (backlog > kSlowClientBytes) {
+                LOG_WARN << "对端发送缓冲积压 " << backlog << " 字节（阈值 "
+                         << kSlowClientBytes << "），判定为慢客户端并断开："
+                         << target->peerAddress().toIpPort();
+                g_err_count[kErrSlowClient].fetch_add(1, std::memory_order_relaxed);
+                target->shutdown();
+                continue;
+            }
+            if (g_log_payload) {
+                LOG_INFO << "转发 " << type << " 长度=" << decoded.size()
+                         << " 内容预览: "
+                         << decoded.substr(0, std::min(decoded.size(), (size_t)100));
+            } else {
+                LOG_DEBUG << "转发 " << type << " 长度=" << decoded.size();
+            }
+            std::string frameData = wrapWsFrame(decoded);
+            if (frameData.empty()) {
+                LOG_ERROR << "wrapWsFrame 生成空帧，丢弃消息，原始数据长度=" << decoded.size();
+            } else {
+                target->send(frameData);
+                LOG_DEBUG << "转发 " << type << " 成功，帧长度=" << frameData.size();
             }
             continue;
         }
@@ -1280,6 +1412,54 @@ void logOutput(const char* msg, int len) {
     }
 }
 
+// ========== 优雅下线（SIGTERM / SIGINT）==========
+// systemctl restart / stop 发的是 SIGTERM。不接管的话进程立刻消失，
+// 客户端只看到 TCP 断开、界面上什么都没变，用户会以为是自己网断了。
+// 做法：信号处理器里只往自管道写一个字节（handler 里只能调异步信号安全的函数），
+// 真正的收尾交给 EventLoop 线程。
+int g_signalPipe[2] = {-1, -1};
+
+void OnSignal(int sig) {
+    const char c = static_cast<char>(sig);
+    const ssize_t n = ::write(g_signalPipe[1], &c, 1);
+    (void)n;  // 管道满/被中断都无所谓，收到一次就够
+}
+
+void StartGracefulShutdown(EventLoop* loop) {
+    static std::atomic<bool> started(false);
+    bool expected = false;
+    if (!started.compare_exchange_strong(expected, true)) return;
+
+    LOG_INFO << "收到退出信号，开始优雅下线（广播 server_shutdown 后退出）";
+
+    std::vector<TcpConnectionPtr> clients;
+    {
+        std::lock_guard<std::mutex> lock(g_clients_mutex);
+        clients.assign(g_ws_clients.begin(), g_ws_clients.end());
+    }
+
+    Json::Value msg;
+    msg["type"] = "server_shutdown";
+    msg["reason"] = "restart";
+    msg["retryAfterMs"] = 3000;
+    const std::string frame = wrapWsFrame(msg.toStyledString());
+    size_t sent = 0;
+    for (auto& conn : clients) {
+        if (!conn || !conn->connected()) continue;
+        conn->send(frame);
+        ++sent;
+    }
+    LOG_INFO << "已通知 " << sent << " 个连接，200ms 后关闭";
+
+    // 先等 200ms 让 send 出去的字节真正刷到网卡，再断开、再退出。
+    loop->runAfter(0.2, [loop, clients]() {
+        for (auto& conn : clients) {
+            if (conn && conn->connected()) conn->shutdown();
+        }
+        loop->runAfter(0.2, [loop]() { loop->quit(); });
+    });
+}
+
 // ========== 主函数 ==========
 int main() {
     // 文件日志
@@ -1309,6 +1489,11 @@ int main() {
     if (const char* t = ::getenv("STATS_TOKEN")) {
         g_stats_token = t;
     }
+    // 是否把消息原文打进日志（默认关，见 g_log_payload 的注释）
+    if (const char* p = ::getenv("LOG_PAYLOAD")) {
+        const std::string flag(p);
+        g_log_payload = (flag == "1" || flag == "true" || flag == "yes");
+    }
     if (g_auth_required) {
         if (g_jwt_secret.size() < 32) {
             LOG_ERROR << "JWT_SECRET 未设置或过短（需 ≥32 字节），且 AUTH_REQUIRED 未关闭";
@@ -1328,22 +1513,42 @@ int main() {
     server.setThreadNum(4);
     server.start();
 
+    // 接管 SIGTERM / SIGINT：systemd 的 stop/restart 走这条路。
+    if (::pipe(g_signalPipe) == 0) {
+        ::fcntl(g_signalPipe[0], F_SETFL, O_NONBLOCK);
+        ::fcntl(g_signalPipe[1], F_SETFL, O_NONBLOCK);
+        // 故意用 new 并一直持有：这个 Channel 要活到进程结束，
+        // 用栈对象会在 main 返回后先析构、晚于 EventLoop，反而危险。
+        auto* sigChannel = new Channel(&loop, g_signalPipe[0]);
+        sigChannel->setReadCallback([&loop](Timestamp) {
+            char c;
+            while (::read(g_signalPipe[0], &c, 1) > 0) {
+            }
+            StartGracefulShutdown(&loop);
+        });
+        sigChannel->enableReading();
+        ::signal(SIGTERM, OnSignal);
+        ::signal(SIGINT, OnSignal);
+    } else {
+        LOG_WARN << "建立信号自管道失败，SIGTERM 将按默认行为直接退出";
+    }
+
     // 鉴权超时回收：每秒扫一次，把"建连后 5 秒内没发 auth"的连接关掉。
     // 目的是防止有人只挂连接不认证、白占服务端资源。
     loop.runEvery(1.0, []() {
         std::vector<TcpConnectionPtr> expired;
         const int64_t now = NowMs();
-        {
-            std::lock_guard<std::mutex> lock(g_auth_mutex);
-            for (auto& kv : g_auth) {
+        for (int i = 0; i < kAuthShards; ++i) {
+            std::lock_guard<std::mutex> lock(g_auth_shards[i].mutex);
+            for (auto& kv : g_auth_shards[i].map) {
                 if (!kv.second.authenticated && kv.second.deadlineMs > 0 &&
                     now > kv.second.deadlineMs) {
                     expired.push_back(kv.first);
                 }
             }
         }
-        // 注意：必须在释放 g_auth_mutex 之后再关闭连接，
-        // 否则 onConnection 里再去取 g_auth_mutex 会自死锁。
+        // 注意：必须在释放分片锁之后再关闭连接，
+        // 否则 onConnection 里再去取分片锁会自死锁。
         for (auto& conn : expired) {
             if (!conn || !conn->connected()) continue;
             LOG_INFO << "鉴权超时，关闭连接: " << conn->peerAddress().toIpPort();
@@ -1404,6 +1609,9 @@ int main() {
     LOG_INFO << "鉴权：" << (g_auth_required ? "开启（需在 5 秒内 auth）" : "关闭（匿名模式）");
     LOG_INFO << "指标接口：/stats " << (g_stats_token.empty() ? "（仅本机可访问）"
                                                               : "（需要 STATS_TOKEN）");
+    LOG_INFO << "消息日志：" << (g_log_payload ? "含消息原文（LOG_PAYLOAD=1）"
+                                               : "只记类型与长度（LOG_PAYLOAD=1 可打开）");
+    LOG_INFO << "优雅下线：收到 SIGTERM/SIGINT 会先通知客户端再退出";
     LOG_INFO << "=====================================";
 
     loop.loop();

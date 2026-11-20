@@ -951,6 +951,7 @@
     let wsReconnectAttempts = 0;
     let authed = false;             // 本条 WS 连接是否已通过 auth 鉴权
     let reconnectTimer = null;      // 待执行的重连定时器（单例，防止重连叠加出多个 socket）
+    let serverRestartDelayMs = 0;   // 服务端重启时给出的建议重连延迟（见 server_shutdown）
     let connectPromise = null;      // 进行中的建连流程（单飞，防止并发建连）
     let iceRestartTimer = null;
     const WS_MAX_RECONNECT = 10;
@@ -1335,6 +1336,14 @@
                 roomData.live[list[i].roomId] = list[i].peers || 0;
             }
             renderRoomList();
+            return;
+        }
+
+        if (data.type === "server_shutdown") {
+            // 服务端在优雅下线（systemctl restart）。它会留 200ms 再断开，
+            // 先把"为什么断"告诉用户，重连时按它给的建议延迟退避。
+            serverRestartDelayMs = Number(data.retryAfterMs) || 3000;
+            updateStatus("服务器正在重启，稍后自动重连…", true);
             return;
         }
 
@@ -1763,6 +1772,18 @@
     function scheduleReconnect() {
         if (wsDisconnectedIntentionally) return;
         if (reconnectTimer) return;                        // 已有重连计划，不重复排程
+        // 服务端刚告知"我要重启"：按它给的时间重连就行，不必走指数退避
+        // （服务端 200ms 就断、几秒就回来，退避反而显得像连不上）。
+        if (serverRestartDelayMs > 0) {
+            const delay = serverRestartDelayMs;
+            serverRestartDelayMs = 0;
+            updateStatus("服务器正在重启，稍后自动重连…", true);
+            reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                connectWebSocket().catch(() => {});
+            }, delay);
+            return;
+        }
         if (wsReconnectAttempts >= WS_MAX_RECONNECT) {
             updateStatus("连接已断开，请刷新页面", true);
             return;
