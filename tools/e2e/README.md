@@ -7,6 +7,7 @@
 | `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发 | 只需能连到信令端口 | 否 |
 | `e2e-fullstack.js` | 整条链路的接线：nginx 反代、Go 认证服务 + PostgreSQL、wss 升级、建房/密码/解散 | 已按 `deploy/install.sh` 部署 | 否 |
 | `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、屏幕共享（替换视频源不重协商）、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
+| `graceful-restart.js` | 服务端优雅下线：重启时客户端收到 `server_shutdown`（而不是被无声掐断）、按 `retryAfterMs` 重连、重启后房间与计数归零 | 能 ssh 到服务器并 `systemctl restart` | 否 |
 
 三者互补，不能互相替代：`ws-smoke` 通过只说明信令状态机对，`browser-e2e` 才说明媒体真的流起来了。
 历史上「远端画面全黑但页面显示通话中」这个 bug 就是 `browser-e2e` 抓出来的，前两层全绿。
@@ -36,7 +37,17 @@ node tools/e2e/browser-e2e.js 192.168.220.128
 
 # 4) 强制走 TURN 中继（验证 coturn 真的在转发媒体）
 node tools/e2e/browser-e2e.js 192.168.220.128 --relay
+
+# 5) 优雅下线：重启服务端，看客户端有没有被"好好送走"
+SSH_KEY=~/.ssh/vmkey SSH_USER=andres SSH_HOST=192.168.220.128 SSH_PASSWORD='***' \
+  node tools/e2e/graceful-restart.js 192.168.220.128 8888
 ```
+
+`graceful-restart.js` 会用 ssh 在服务器上执行 `systemctl restart webrtc-signaling`，所以要么给
+`SSH_KEY` + `SSH_USER` + `SSH_HOST` + `SSH_PASSWORD`（脚本内部用 `echo pw | sudo -S`），要么直接给
+`RESTART_CMD='systemctl restart webrtc-signaling'` 在服务器本机跑。断言清单：重启前双方已在通话中 →
+收到 `server_shutdown` 且带 `reason=restart`、`retryAfterMs>=1000` → 连接被关闭 → 按 `retryAfterMs`
+重连成功 → `/stats` 里 `uptimeSeconds` 归零、`rooms.total === 0`。
 
 ### `--relay` 是怎么强制中继的
 
@@ -67,6 +78,8 @@ headless 里没有屏幕选择器，`getDisplayMedia()` 会直接 reject。脚�
 | `BROWSER_HEADLESS=0` | `browser-e2e.js` | 打开真实窗口，方便肉眼看。默认 headless。 |
 | `BROWSER_RELAY=1` | `browser-e2e.js` | 等价于 `--relay`（强制中继）。 |
 | `NODE_TLS_REJECT_UNAUTHORIZED=0` | `e2e-fullstack.js` | 自签证书时放宽校验（脚本内部请求也传了 `rejectUnauthorized: false`，一般不用设）。 |
+| `STATS_TOKEN` | `graceful-restart.js`、`ws-smoke.js` | `/stats` 的令牌，见 `/opt/webrtc/signaling.env`。不设则跳过 `/stats` 相关断言。 |
+| `SSH_KEY` / `SSH_USER` / `SSH_HOST` / `SSH_PASSWORD` | `graceful-restart.js` | 用来在远端重启服务；也可以改用单个 `RESTART_CMD`。 |
 
 ## 几个坑，写在这里省得再踩
 

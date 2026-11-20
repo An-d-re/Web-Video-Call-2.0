@@ -96,7 +96,9 @@ node tools/load/loadtest.js --merge a.json,b.json
 
 - `connections{ws,authed,unauthenticated}`：在线连接、已鉴权、5 秒内没鉴权的
 - `rooms{total,full,members}`：房间总数、满员房间、座位总数
-- `messages{...}` / `errors{...}`：分类计数，看错误是不是集中爆发
+- `messages{...}` / `errors{...}`：分类计数，看错误是不是集中爆发。`rate_limited` 表示有连接刷得超过
+  60 条/秒被断开，`slow_client` 表示有连接读得太慢（发送缓冲 > 256 KiB）被断开——这两个业务上不该出现，
+  压测里出现就说明客户端侧有问题
 - `latencyUs{join_room,forward}`：**服务端内部**处理耗时（不含网络），p50/p95/p99/max
 - `resources{rssMb,fds}`：内存与文件描述符，长稳场景主要看这两个
 
@@ -112,3 +114,10 @@ node tools/load/loadtest.js --merge a.json,b.json
 3. 跑完一定要 `sudo systemctl restart webrtc-signaling`：压测期间 `/stats` 计数和房间残留会带到下一次。
 4. 虚机只有 4 GiB 内存，500 连接以上注意 `rssMb`；从 500 起步，逼近阈值就停。
 5. `--mode fullstack` 会撞注册限流（`registerIP` 5/分钟、突发 3），账号数别超过 3 个，或者提前手工注册。
+6. **压测前先确认服务器上没人在偷吃 CPU**：`unattended-upgrade` 这类后台任务会占满一个核（nice 19），
+   表现是 CPU 数字莫名其妙翻三倍、延迟也整体抬高。用 `/proc/stat` 取前后差值算 CPU 之前，先
+   `ps -eo pid,pcpu,comm --sort=-pcpu | head -5` 看一眼；不干净就先
+   `sudo systemctl stop unattended-upgrades` 再压。CPU 只在干净窗口里才有可比性。
+7. 判断"优化有没有效"要**用同一个工具、同一组参数**看延迟分位，不要跨版本比 CPU——
+   CPU 受后台任务、`-O` 级别、核数影响太大。
+

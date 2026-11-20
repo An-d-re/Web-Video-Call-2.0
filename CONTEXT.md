@@ -96,6 +96,22 @@ _Avoid_: 删除、关闭房间
 通话建立后再次交换 Offer/Answer，用于新增或移除媒体轨道。双方同时发起时冲突，由**响应方**让步（perfect negotiation）。
 _Avoid_: 重新连接、重新协商
 
+**限流 (Rate Limit)**：
+对单条连接允许的消息频率设上限（60 条/秒、突发 120）。超限回 `error` 并断开，计入 `errors.rate_limited`。
+正常通话峰值约 10 条/秒，所以被限流一定意味着客户端写坏了或有人在刷。
+_Avoid_: 节流、频率限制
+
+**背压 (Backpressure)**：
+对端读得慢、数据在服务端待发缓冲里堆积时的处理。本项目判定为"发送缓冲 > 256 KiB 就断开这个慢客户端"，
+计入 `errors.slow_client`，避免内存被一个卡住的客户端拖爆。
+_Avoid_: 限速、丢包
+
+**优雅下线 (Graceful Shutdown)**：
+收到 `SIGTERM`/`SIGINT` 时不直接退出，而是先给在线连接广播 `server_shutdown`（带 `retryAfterMs`），
+等 200 ms 让字节真正发出再关闭。客户端据此显示"服务器正在重启"并按提示重连，而不是被无声掐断。
+_Avoid_: 重启、关闭服务
+
+
 ### 网络连接
 
 **ICE (Interactive Connectivity Establishment)**：

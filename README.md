@@ -408,10 +408,12 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 
 | 命令 | 检查什么 | 上次实测 |
 |---|---|---|
-| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + `/stats` 鉴权与结构（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 27/27 |
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + `/stats` 鉴权与结构 + 限流（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 30/30 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
 | `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、挂断 | 33/33（P2P） |
 | `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 38/38 |
+| `node tools/e2e/graceful-restart.js <IP> 8888` | 重启服务端时客户端收到 `server_shutdown`、按提示重连、状态归零 | 6/6 |
+
 
 `browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
 加 `--relay` 是验证 TURN 的唯一可信方式：它把页面里的 `RTCPeerConnection` 包一层、强制只收中继候选，
@@ -428,6 +430,7 @@ curl -s "http://127.0.0.1:8888/stats?token=<STATS_TOKEN>&reset=1"   # 清窗口�
 ```
 
 返回连接数、房间数、按类型分组的消息/错误计数、`join_room` 与转发的延迟分位（微秒）、RSS 与 fd 数。
+其中 `errors.rate_limited` / `errors.slow_client` 不为 0 时，说明有客户端在刷消息或读得太慢被断开过。
 
 压测工具 `tools/load/loadtest.js` 只走真实业务路径（auth → join_room → offer/answer → ICE → bye），
 支持 `--mode signaling`（只压 C++）与 `--mode fullstack`（走 nginx + Go + PG）：
@@ -438,8 +441,28 @@ node tools/load/loadtest.js --host <IP> --mode signaling \
   --rooms 200 --ramp-up 20 --duration 60 --reset
 ```
 
-**实测基线**（4 核 4 GiB 虚机、同网段）：2000 连接 / 1000 房间时服务端转发 P95 0.5 ms、CPU 15%、内存 32 MB；
+**实测基线**（4 核 4 GiB 虚机、同网段）：2000 连接 / 1000 房间时服务端转发 P95 0.1 ms、CPU 7%、内存 32 MB
+（这三个数是阶段二优化之后的；优化前后对比见报告 6.5 节，转发 P99 从 2.5 ms 降到 0.25 ms）。
 完整数据、发现与容量推算见 [`docs/loadtest-report.md`](docs/loadtest-report.md)，参数与坑见 [`tools/load/README.md`](tools/load/README.md)。
+
+### 服务端稳定性开关
+
+信令服务有几个环境变量（都在 `/opt/webrtc/signaling.env`，改完 `systemctl restart webrtc-signaling`）：
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `LOG_PAYLOAD` | 关 | 打开后把每条消息的完整 JSON 写进日志。排查协议问题时开，压测和生产保持关闭——默认只记 `type` 与长度 |
+| `STATS_TOKEN` | `install.sh` 生成 | `/stats` 的令牌；不配则只允许本机访问 |
+| `AUTH_REQUIRED` | `true` | 设为 `false` 退回匿名模式（不需要 `auth` 消息），用于回滚或本地调试 |
+
+另外两个防护是硬编码的、不需要配置：
+
+- **单连接限流**：60 条/秒、突发 120（正常通话峰值约 10 条/秒）。超限回 `{"type":"error","code":"rate_limited"}` 并断开，计入 `errors.rate_limited`。
+- **慢客户端保护**：转发前检查对端发送缓冲，超过 256 KiB 说明它一直不读数据，直接断开并计入 `errors.slow_client`，避免内存被一个卡住的客户端拖爆。
+- **优雅下线**：收到 `SIGTERM`/`SIGINT`（`systemctl restart/stop` 就是发它）时，先给所有在线连接广播
+  `{"type":"server_shutdown","retryAfterMs":3000}`，等 200 ms 让字节真正发出去再关闭。前端收到后显示
+  「服务器正在重启，稍后自动重连…」，并按 `retryAfterMs` 重连（不走指数退避，因为服务端几秒就回来）。
+
 
 ## 信令协议
 
@@ -512,19 +535,19 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 
 - **信令层已要求登录**：`join_room` 之前必须先发 `auth`（HS256 JWT），未认证连接 5 秒后被断开。
   进房还要再换一张 `roomToken`（由 auth 服务在校验房间与密码后签发），信令服务只验签。
-  仍是待办：**WS 侧限流**（登录接口已有）。
 - **房间元数据已持久化**（PostgreSQL），但**实时连接仍在单进程内存里**：信令服务本身还不能水平扩容（见 `docs/ha-scaling-design.md`）。
 - **房间口令是短口令**（4~8 位）+ sha256 加盐，抗离线爆破能力有限；它的定位是"防误入"，账号密码才用 bcrypt。
 - **TURN 凭据是临时签发的**（coturn `use-auth-secret` + REST API）：`start_call` 里下发的是
   `username="<过期时间戳>:<userId>"` + `credential=base64(HMAC-SHA1(secret, username))`，TTL 默认 7200 秒。
   凭据被抄走也只能用到过期为止，服务器上不需要任何用户表。**静态凭据模式仍然保留**（`secret` 留空），仅供内网调试。
 - **TURN 已实测中继**：`tools/e2e/browser-e2e.js <IP> --relay` 强制 `iceTransportPolicy: 'relay'`，
-  两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，27 项全过。**跨公网/跨 NAT 前仍要确认**：
+  两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，38 项全过。**跨公网/跨 NAT 前仍要确认**：
   云主机在 NAT 后面必须给 `install.sh` 传 `TURN_PUBLIC_IP`（否则浏览器拿到内网中继地址），
   且安全组要放行 3478 与 49160-49200/udp。
 - 渲染层只做了默认摄像头/麦克风 + 屏幕共享，没有设备选择、文字聊天、通话质量统计（`getStats`）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
-- 服务端房间查找是线性扫描全部房间，房间多了会退化；应改为 `conn → roomId` 索引。
+- 房间查找已改为 `conn → roomId` 索引（压测转发 P99 2.5 ms→0.25 ms），但**房间列表本身仍是单 map 单锁**，
+  万房间规模下 `list_rooms` 会成为新的扫描点；`setThreadNum(4)` 在 2 vCPU 机器上也没复测过。
 
 ## 安全注意事项
 

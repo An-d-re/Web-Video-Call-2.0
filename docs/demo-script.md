@@ -130,7 +130,7 @@ node tools/e2e/browser-e2e.js 192.168.220.128 --relay
 
 | 层 | 命令 | 结果 |
 |---|---|---|
-| 协议层（直接说 WebSocket 协议） | `JWT_SECRET=<虚机密钥> node tools/e2e/ws-smoke.js 192.168.220.128 8888` | 27/27 |
+| 协议层（直接说 WebSocket 协议） | `JWT_SECRET=<虚机密钥> node tools/e2e/ws-smoke.js 192.168.220.128 8888` | 30/30 |
 | 全栈层（nginx + Go + PG + WSS） | `node tools/e2e/e2e-fullstack.js 192.168.220.128` | 34/34 |
 | 浏览器层（真 Edge + 假摄像头，含屏幕共享） | `node tools/e2e/browser-e2e.js 192.168.220.128` | 33/33（强制中继 38/38） |
 
