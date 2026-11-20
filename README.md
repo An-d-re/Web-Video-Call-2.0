@@ -408,10 +408,10 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 
 | 命令 | 检查什么 | 上次实测 |
 |---|---|---|
-| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + `/stats` 鉴权与结构 + 限流（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 30/30 |
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + 聊天转发与截断 + `/stats` 鉴权与结构 + 限流（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 33/33 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
-| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、挂断 | 33/33（P2P） |
-| `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 38/38 |
+| `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、质量面板、聊天、设备切换、手机布局、挂断 | 57/57（P2P） |
+| `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 62/62 |
 | `node tools/e2e/graceful-restart.js <IP> 8888` | 重启服务端时客户端收到 `server_shutdown`、按提示重连、状态归零 | 6/6 |
 
 
@@ -466,7 +466,7 @@ node tools/load/loadtest.js --host <IP> --mode signaling \
 
 ## 信令协议
 
-WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer`/`ice`/`video_mute`/`mic_mute` 只做原样转发，不解析内容。
+WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer`/`ice`/`video_mute`/`mic_mute` 只做原样转发，不解析内容；`chat` 例外——只截断超长文本后重组转发。
 
 ### 客户端 → 服务端
 
@@ -481,6 +481,7 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | `video_mute` | `{muted}` | 本端是否停止发送视频 |
 | `mic_mute` | `{muted, started}` | 本端麦克风：`started`=是否已获取设备，`muted`=是否停止发送 |
 | `bye` | `{}` | 请求结束通话。幂等 |
+| `chat` | `{text}` | 文字消息。服务端**只做限长 + 转发**，不存历史；超过 500 字符按字符截断（不会切坏汉字） |
 
 ### 服务端 → 客户端
 
@@ -492,6 +493,7 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 | `start_call` | `{initiator, peer, iceServers?}` | 房间已满，通话开始。`initiator=true` 的一方在重协商冲突中不让步（impolite）；`peer` 是对端身份 `{userId, username, displayName}` |
 | `offer` / `answer` / `ice` | 原样 | 转发自对端 |
 | `video_mute` / `mic_mute` | 原样 | 转发自对端 |
+| `chat` | `{text}` | 转发自对端的文字消息（服务端重组过包，只带 `type` 与 `text`） |
 | `bye` | `{}` | 对端挂断 / 对端断线 / 对端切换到别的房间 |
 | `bye_ack` | `{}` | 你发出的 `bye` 已受理 |
 | `error` | `{code, message}` | 见下表 |
@@ -530,6 +532,17 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
   同 kind 替换**不触发重新协商**，对方画面平滑切换、连接不断；状态通过 `video_mute` 的 `screen` 字段同步
   （服务端原样转发，不解析内容）。浏览器自带的「停止共享」浮条被点时，`track.onended` 会自动切回摄像头。
 - **信令掉线**：指数退避重连（最多 10 次），重连成功后自动补发 `join_room`；页面 `pagehide` 时主动断开，让对端立刻收到 `bye` 而不是等 TCP 超时。
+- **设备切换**：`enumerateDevices()` 列出摄像头/麦克风，选择后用 `getUserMedia` 重新采集再 `replaceTrack` 换轨，
+  **不触发重新协商、通话不中断**；选择记在 `localStorage`，下次开启设备时直接用它。
+  未授权时 `label` 是空的，页面会提示先点一次「开启摄像头/麦克风」再刷新列表。
+- **通话质量面板**：通话建立后每 2 秒 `getStats()` 一次，显示码率、分辨率、往返时延、丢包率、链路类型
+  （直连 P2P / 中继 TURN）。`RTT > 300 ms` 或丢包 `> 5%` 时标题变「网络不稳定」并变黄；点标题可折叠。
+  码率是两次采样差分（`bytesReceived` 累计值相减），所以第一次轮询只记基线、数字要等 2 秒才出现。
+- **文字聊天**：走同一条 WebSocket（`chat` 消息），服务端只转发不落库。前端只保留**本次通话**最近 100 条，
+  挂断或刷新即清；消息用 `textContent` 渲染成纯文本，对方发 `<img onerror=...>` 也只会显示成字符。
+  单条上限 500 字符。抽屉在右侧，关着时来消息会亮未读红点。
+- **手机布局**：`≤750px` 时远端画面占满、本地画面缩成右下角画中画、控制条贴底且按钮高度 ≥44px
+  （拇指热区）、聊天抽屉按整屏宽展开。
 
 ## 已知限制
 
@@ -541,10 +554,13 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
   `username="<过期时间戳>:<userId>"` + `credential=base64(HMAC-SHA1(secret, username))`，TTL 默认 7200 秒。
   凭据被抄走也只能用到过期为止，服务器上不需要任何用户表。**静态凭据模式仍然保留**（`secret` 留空），仅供内网调试。
 - **TURN 已实测中继**：`tools/e2e/browser-e2e.js <IP> --relay` 强制 `iceTransportPolicy: 'relay'`，
-  两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，38 项全过。**跨公网/跨 NAT 前仍要确认**：
+  两端 `candidate-pair` 的本地候选都是 `relay` 且画面正常，62 项全过。**跨公网/跨 NAT 前仍要确认**：
   云主机在 NAT 后面必须给 `install.sh` 传 `TURN_PUBLIC_IP`（否则浏览器拿到内网中继地址），
   且安全组要放行 3478 与 49160-49200/udp。
-- 渲染层只做了默认摄像头/麦克风 + 屏幕共享，没有设备选择、文字聊天、通话质量统计（`getStats`）。
+- **移动端只在 390×844 的浏览器模拟下验证过**（`Emulation.setDeviceMetricsOverride`），没有真机测试：
+  iOS Safari 的自动播放策略、`getUserMedia` 权限弹窗、竖屏旋转都与桌面不同，真机上还要再验一遍。
+- **文字聊天不落库**：只存在于这一通电话的两端内存里，挂断即消失，也不支持离线消息。
+  走 WSS 传输、服务端可见明文（端到端加密只覆盖音视频媒体，不覆盖信令与聊天）。
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
 - 房间查找已改为 `conn → roomId` 索引（压测转发 P99 2.5 ms→0.25 ms），但**房间列表本身仍是单 map 单锁**，
   万房间规模下 `list_rooms` 会成为新的扫描点；`setThreadNum(4)` 在 2 vCPU 机器上也没复测过。

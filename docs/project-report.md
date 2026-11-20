@@ -19,7 +19,7 @@ P2P 打不通时由自建 TURN 服务器中继。支持一对一到多人、从�
 
 **当前状态**：v1.0 已在一台 Ubuntu 24.04 虚拟机上完成**全链路部署并逐层验证**——nginx（HTTPS/WSS）+ Go 认证服务（PostgreSQL）
 + 自研 C++ 信令，含 perfect negotiation、ICE 自动恢复、断线重连、半开连接回收。
-四层测试全绿：信令协议 30/30、全栈接线 34/34、真实浏览器通话 33/33（强制中继 38/38）、优雅下线 6/6。
+四层测试全绿：信令协议 33/33、全栈接线 34/34、真实浏览器通话 57/57（强制中继 62/62）、优雅下线 6/6。
 TURN 由 `deploy/install.sh` 随部署一起装好（coturn，`use-auth-secret` + 每次通话现签临时凭据），
 并已用 `browser-e2e --relay` 证明媒体确实经中继转发。
 信令内置只读 `/stats` 指标接口，压测基线已测出：**2000 连接 / 1000 房间下转发 P95 0.1 ms、CPU 7%**
@@ -203,7 +203,7 @@ A                            signaling                        B
 | B7 | TURN 临时凭据 | ✅ | coturn `use-auth-secret` + REST API：`username="<exp>:<userId>"`、`credential=HMAC-SHA1(secret, username)`，每次通话现签、TTL 可配 |
 | B8 | 屏幕共享 | ✅ | `getDisplayMedia` + `RTCRtpSender.replaceTrack()` 换源，**不重新协商**、画面不断；与摄像头互斥；`track.onended` 处理浏览器自带「停止共享」；状态经 `video_mute.screen` 同步给对端 |
 
-### 4.3 设备与状态表达（v1.0 ✅）
+### 4.3 设备、体验与状态表达（v1.0 ✅）
 
 | 编号 | 功能 | 状态 | 说明 |
 |---|---|---|---|
@@ -213,6 +213,10 @@ A                            signaling                        B
 | C4 | 麦克风开关 | ✅ | 同时设置发送器 `active` 参数 |
 | C5 | 远端状态可视化 | ✅ | "对方已关闭摄像头"占位、"对方已静音"标识（区分未开启/已关闭） |
 | C6 | 设备错误分类提示 | ✅ | 未授权 / 未检测到设备 / 被其他应用占用，分别给出可操作提示 |
+| C7 | 设备选择与热切换 | ✅ | `enumerateDevices()` 列设备，选择后重新采集 + `replaceTrack` 换轨，**不重协商、通话不中断**；偏好存 `localStorage` |
+| C8 | 通话质量面板 | ✅ | `getStats()` 每 2 秒刷新：码率、分辨率、往返时延、丢包率、直连/中继；RTT>300ms 或丢包>5% 标黄；点标题折叠 |
+| C9 | 文字聊天 | ✅ | 走同一 WebSocket（`chat`），服务端限长 500 字符后转发、**不落库**；前端保留最近 100 条、纯文本渲染防 XSS |
+| C10 | 移动端布局 | ✅ | ≤750px：远端铺满 + 本地画中画、控制条贴底且按钮 ≥44px、聊天抽屉整屏宽 |
 
 ### 4.4 连接韧性（v1.0 ✅）
 
@@ -401,10 +405,10 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 |---|---|
 | C++ 信令编译 | `-Wall` 下 **0 告警**；`server` 153 KB、`jwt_selftest` 38 KB |
 | JWT 跨语言一致性 | `./jwt_selftest tests/jwt_vectors.json` **11/11**（C++ 验 Go 签的令牌） |
-| 信令协议状态机 | `tools/e2e/ws-smoke.js` **30/30**（鉴权超时、凭证类型隔离、座位上限、转发、`bye` 释放座位、TURN 临时凭据按用户签发、`/stats` 鉴权与结构、单连接限流） |
+| 信令协议状态机 | `tools/e2e/ws-smoke.js` **33/33**（鉴权超时、凭证类型隔离、座位上限、转发、`bye` 释放座位、TURN 临时凭据按用户签发、`/stats` 鉴权与结构、单连接限流、聊天转发与按字符截断） |
 | 全栈接线 | `tools/e2e/e2e-fullstack.js` **34/34**（nginx 反代 + Go + PostgreSQL + wss 升级 + 建房/密码/解散） |
-| 真实浏览器通话 | `tools/e2e/browser-e2e.js` **33/33**（Edge 157 + 假摄像头：ICE connected、双向画面、屏幕共享切换、挂断 bye 走通） |
-| TURN 中继 | `browser-e2e.js --relay` **38/38**：强制 `iceTransportPolicy: 'relay'`，两端选中的 `candidate-pair` 都是 `relay` 候选，画面与声音正常；错误凭据 `Cannot complete Allocation` 被拒 |
+| 真实浏览器通话 | `tools/e2e/browser-e2e.js` **57/57**（Edge 157 + 假摄像头：ICE connected、双向画面、屏幕共享切换、质量面板、聊天收发与 XSS 转义、设备热切换不重协商、390×844 手机布局、挂断 bye 走通） |
+| TURN 中继 | `browser-e2e.js --relay` **62/62**：强制 `iceTransportPolicy: 'relay'`，两端选中的 `candidate-pair` 都是 `relay` 候选，画面与声音正常；错误凭据 `Cannot complete Allocation` 被拒 |
 | 优雅下线 | `tools/e2e/graceful-restart.js` **6/6**：`systemctl restart` 时在线客户端收到 `server_shutdown`（带 `retryAfterMs`），按提示重连成功，重启后房间与计数归零 |
 | 媒体路径 | 同网段 P2P 直连（`host` 候选即打通）；跨网段走 coturn（`use-auth-secret` + 每次通话现签凭据，TTL 7200 秒） |
 | 压测基线（优化前） | 2000 连接 / 1000 房间：服务端转发 P95 **0.5 ms**、入房 P95 **1 ms**、CPU **15%**、RSS 32 MB、fd 2022（=连接数+22，无泄漏）；同参数两轮 P50/P95/P99 完全一致 |

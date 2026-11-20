@@ -4,9 +4,9 @@
 
 | 脚本 | 验证什么 | 依赖 | 需要浏览器 |
 | --- | --- | --- | --- |
-| `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发 | 只需能连到信令端口 | 否 |
+| `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发、聊天转发与截断、`/stats`、限流 | 只需能连到信令端口 | 否 |
 | `e2e-fullstack.js` | 整条链路的接线：nginx 反代、Go 认证服务 + PostgreSQL、wss 升级、建房/密码/解散 | 已按 `deploy/install.sh` 部署 | 否 |
-| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、屏幕共享（替换视频源不重协商）、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
+| `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、屏幕共享（替换视频源不重协商）、通话质量面板、文字聊天（含 XSS 转义）、设备热切换、手机布局、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
 | `graceful-restart.js` | 服务端优雅下线：重启时客户端收到 `server_shutdown`（而不是被无声掐断）、按 `retryAfterMs` 重连、重启后房间与计数归零 | 能 ssh 到服务器并 `systemctl restart` | 否 |
 
 三者互补，不能互相替代：`ws-smoke` 通过只说明信令状态机对，`browser-e2e` 才说明媒体真的流起来了。
@@ -68,6 +68,20 @@ headless 里没有屏幕选择器，`getDisplayMedia()` 会直接 reject。脚�
 这样能完整验证**页面自己的逻辑**——按钮状态、`replaceTrack` 换源、`signalingState` 不变（证明没重协商）、
 对端 `screen` 标记与角标、停止共享后恢复摄像头。真实屏幕采集属于浏览器能力，用人工演示验证（见
 `docs/demo-script.md`）。
+
+### 质量面板 / 聊天 / 设备切换 / 手机布局是怎么测的
+
+这四项都是页面逻辑，用 `Runtime.evaluate` 直接读 DOM 与全局变量断言：
+
+- **质量面板**：等 `#statsPanel.active`，再断言 `#statsBitrate` 出现数字。注意码率是两次
+  `getStats()` 的差分，第一次轮询只记基线，所以这条必须 `waitFor` 而不是立刻断言（踩过）。
+- **聊天**：A 输入 → 点发送 → 断言 A 列表里有 `.chat-msg.mine`、B 出现未读红点、B 打开抽屉看到
+  `.chat-msg.theirs`。还发一条 `<img src=x onerror=...>` 验证**纯文本渲染**：断言 `#chatList img`
+  数量为 0 且 `window.__pwned` 没有被置位。
+- **设备切换**：读 `cameraTrack.id` → 在弹窗里重选摄像头 → 断言新 track id 变了、`readyState==='live'`、
+  已在 sender 上，且 `signalingState` 仍是 `stable`（证明没重协商）。
+- **手机布局**：`Emulation.setDeviceMetricsOverride` 模拟 390×844，断言 `scrollWidth<=391`
+  （无横向滚动）、本地画面宽度 ≤160 且右边缘在视口内、控制按钮高度 ≥44、聊天抽屉宽度 ≥380。
 
 ## 环境变量
 

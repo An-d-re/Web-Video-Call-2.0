@@ -66,6 +66,17 @@ _Avoid_: 释放摄像头、停止设备
 停止发送本端音频，设备保持占用。与"关闭摄像头"是同层面的操作。
 _Avoid_: 闭麦、静音、禁音
 
+**设备切换 (Device Switch)**：
+通话中把摄像头或麦克风换成另一台设备（比如从内置摄像头换到 USB 摄像头）。
+做法是重新采集一条轨道再 `replaceTrack` 换掉发送中的那条，**不新增轨道、不触发重协商**，所以对方画面不中断。
+选择会记住（`localStorage`），下次开启设备时直接用新设备。
+_Avoid_: 换摄像头、重新打开设备
+
+**通话质量 (Call Quality)**：
+对本端通话的主观/客观状态描述，客观数字来自 `getStats()`：码率、分辨率、往返时延、丢包率、链路类型（直连/中继）。
+面板每 2 秒刷新一次，往返 > 300 ms 或丢包 > 5% 时标为"网络不稳定"。
+_Avoid_: 网络状态、延迟
+
 ### 信令
 
 **信令 (Signaling)**：
@@ -75,7 +86,13 @@ _Avoid_: 消息、指令
 **信令消息 (Signaling Message)**：
 通过 WebSocket 以 JSON 格式传输的单条控制消息：`auth`、`auth_ok`、`join_room`、`joined`、
 `list_rooms`、`live_rooms`、`start_call`、`offer`、`answer`、`ice`、`bye`、`bye_ack`、
-`video_mute`、`mic_mute`、`error`。
+`video_mute`、`mic_mute`、`chat`、`error`。
+
+**文字聊天 (Text Chat)**：
+通话双方在**本次通话内**互发的文字消息，走同一条 WebSocket（`chat` 消息）。
+服务端只做限长（500 字符）与转发，**不存历史**；客户端只保留最近 100 条，挂断或刷新即清。
+它属于"通话中的辅助通道"，不是独立的消息系统——没有离线消息、不落库。
+_Avoid_: 消息、聊天记录、IM
 
 **离开房间 (Leave Room)**：
 把本端从房间里移除、释放座位并通知对端。有两个入口：
