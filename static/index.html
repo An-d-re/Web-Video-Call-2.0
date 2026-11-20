@@ -283,6 +283,153 @@
         .screen-badge.active { display: inline-flex; }
         .screen-badge svg { width: 13px; height: 13px; stroke: #fff; }
 
+        /* ===== 通话质量面板（远端画面右上角，可折叠） ===== */
+        .stats-panel {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            z-index: 5;
+            display: none;
+            min-width: 132px;
+            background: rgba(0, 0, 0, 0.62);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            border-radius: 10px;
+            font-size: 0.68rem;
+            color: #d4d4d8;
+            overflow: hidden;
+        }
+        .stats-panel.active { display: block; }
+        .stats-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            cursor: pointer;
+            user-select: none;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        .stats-head b { font-weight: 600; font-size: 0.7rem; color: #fff; }
+        .stats-head .chev { margin-left: auto; color: #a1a1aa; font-size: 0.6rem; }
+        .stats-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #34d399;
+            flex-shrink: 0;
+        }
+        .stats-panel.warn .stats-dot { background: #fbbf24; }
+        .stats-panel.warn .stats-head b { color: #fbbf24; }
+        .stats-body { padding: 5px 8px 6px; line-height: 1.55; }
+        .stats-body div { display: flex; justify-content: space-between; gap: 10px; }
+        .stats-body span { color: #fff; font-variant-numeric: tabular-nums; }
+        .stats-panel.collapsed .stats-body { display: none; }
+
+        /* ===== 文字聊天抽屉 ===== */
+        .chat-drawer {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 300px;
+            max-width: 88vw;
+            background: var(--surface);
+            border-left: 1px solid var(--border);
+            z-index: 90;
+            display: flex;
+            flex-direction: column;
+            transform: translateX(100%);
+            transition: transform 0.22s ease;
+            visibility: hidden;
+        }
+        .chat-drawer.show { transform: translateX(0); visibility: visible; }
+        .chat-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.85rem 1rem;
+            border-bottom: 1px solid var(--border);
+        }
+        .chat-head h3 { font-size: 0.88rem; color: var(--text); }
+        .chat-head .close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 1.05rem;
+            line-height: 1;
+            cursor: pointer;
+        }
+        .chat-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 0.8rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .chat-empty { color: var(--text-muted); font-size: 0.75rem; text-align: center; margin-top: 1rem; }
+        .chat-msg {
+            max-width: 88%;
+            padding: 0.45rem 0.7rem;
+            border-radius: 0.7rem;
+            font-size: 0.8rem;
+            line-height: 1.45;
+            word-break: break-word;
+            white-space: pre-wrap;
+        }
+        .chat-msg.mine {
+            align-self: flex-end;
+            background: var(--orange-soft);
+            border: 1px solid rgba(255, 107, 53, 0.35);
+        }
+        .chat-msg.theirs {
+            align-self: flex-start;
+            background: var(--bg);
+            border: 1px solid var(--border);
+        }
+        .chat-msg .meta { display: block; font-size: 0.6rem; color: var(--text-muted); margin-bottom: 2px; }
+        .chat-input-row {
+            display: flex;
+            gap: 0.5rem;
+            padding: 0.7rem;
+            border-top: 1px solid var(--border);
+        }
+        .chat-input-row input {
+            flex: 1;
+            min-width: 0;
+            padding: 0.5rem 0.7rem;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 0.6rem;
+            color: var(--text);
+            font-size: 0.82rem;
+            outline: none;
+            font-family: inherit;
+        }
+        .chat-input-row input:focus { border-color: var(--orange); }
+        .chat-input-row button {
+            padding: 0.5rem 0.9rem;
+            border-radius: 0.6rem;
+            border: none;
+            background: var(--orange);
+            color: #fff;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+        .chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+        #chatBtn { position: relative; }
+        .chat-dot {
+            position: absolute;
+            top: 6px;
+            right: 8px;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #ef4444;
+            display: none;
+        }
+        .chat-dot.on { display: block; }
+
         /* ===== Video Overlay ===== */
         .video-overlay {
             position: absolute;
@@ -623,7 +770,7 @@
             color: var(--text-secondary);
             margin: 0.6rem 0 0.3rem;
         }
-        .modal input {
+        .modal input, .modal select {
             width: 100%;
             padding: 0.55rem 0.8rem;
             background: var(--bg);
@@ -634,7 +781,7 @@
             outline: none;
             font-family: inherit;
         }
-        .modal input:focus { border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-soft); }
+        .modal input:focus, .modal select:focus { border-color: var(--orange); box-shadow: 0 0 0 3px var(--orange-soft); }
         .modal .hint { font-size: 0.68rem; color: var(--text-muted); margin-top: 0.25rem; }
         .modal-msg {
             min-height: 1.1em;
@@ -706,6 +853,84 @@
             .header h1 { font-size: 1rem; }
             .btn-control { width: 130px; font-size: 0.8rem; padding: 0.6rem 0.8rem; }
             .room-bar input { width: 140px; }
+        }
+
+        /* ===== 手机竖屏 ===== */
+        /* 目标：远端占主画面、本地浮在右下角、控制条贴底且按钮够大。
+           注意这里只是布局适配，移动端浏览器（尤其 iOS Safari）的自动播放与
+           权限策略与桌面不同，真机行为需要人工再验一遍。 */
+        @media (max-width: 750px) {
+            .app { flex-direction: column; }
+            .main { padding: 56px 0 0; align-items: stretch; }
+            .call-container {
+                padding: 0 0.8rem 0;
+                border: none;
+                border-radius: 0;
+                background: transparent;
+                box-shadow: none;
+                display: flex;
+                flex-direction: column;
+                min-height: calc(100dvh - 56px);
+            }
+            .header { margin-bottom: 0.9rem; }
+            .header h1 { font-size: 1rem; }
+            .room-bar { flex-wrap: wrap; gap: 0.5rem; }
+            .room-bar input { flex: 1; width: auto; min-width: 5.5rem; }
+
+            /* 视频区：远端铺满，本地做成画中画 */
+            .video-grid {
+                position: relative;
+                display: block;
+                flex: 1;
+                min-height: 0;
+                margin: 0.5rem 0 0;
+            }
+            .video-card { min-width: 0; max-width: none; width: 100%; }
+            #remoteCard .video-wrapper { aspect-ratio: auto; height: 100%; min-height: 40vh; }
+            #localCard {
+                position: absolute;
+                right: 0;
+                bottom: 10px;
+                width: 30vw;
+                max-width: 140px;
+                z-index: 6;
+                border-radius: 0.8rem;
+                box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+            }
+            #localCard .video-wrapper { aspect-ratio: 3 / 4; }
+            #localCard .video-label { font-size: 0.62rem; padding: 2px 8px; bottom: 6px; left: 6px; }
+            #localCard .screen-badge { display: none !important; }
+
+            /* 控制条贴底：拇指热区 44px、避开 iPhone 底部横条 */
+            .button-bar {
+                position: sticky;
+                bottom: 0;
+                margin: auto 0 0;
+                padding: 0.7rem 0 calc(0.6rem + env(safe-area-inset-bottom, 0px));
+                background: linear-gradient(to top, rgba(10, 10, 10, 0.96) 55%, rgba(10, 10, 10, 0));
+                z-index: 8;
+            }
+            .button-row { gap: 0.4rem; width: 100%; flex-wrap: nowrap; }
+            .btn-control {
+                width: auto;
+                flex: 1 1 0;
+                min-width: 0;
+                min-height: 44px;
+                flex-direction: column;
+                gap: 3px;
+                padding: 0.35rem 0.2rem;
+                font-size: 0.6rem;
+                border-radius: 0.8rem;
+            }
+            .btn-control svg { width: 20px; height: 20px; }
+            .btn-hangup, .btn-leave { width: auto; flex: 1 1 0; min-height: 44px; }
+            .status-area { padding-bottom: 0.4rem; }
+            .ice-info { display: none; }   /* 手机上占地方、展示价值低 */
+
+            /* 聊天抽屉占满整屏宽；质量面板缩小一号 */
+            .chat-drawer { width: 100%; max-width: none; }
+            .stats-panel { top: 8px; right: 8px; min-width: 116px; font-size: 0.62rem; }
+            .modal { max-width: none; }
         }
     </style>
 </head>
@@ -809,6 +1034,21 @@
                     </svg>
                     <span>对方正在共享屏幕</span>
                 </div>
+                <!-- 通话质量：数值来自 RTCPeerConnection.getStats()，只用于展示 -->
+                <div class="stats-panel" id="statsPanel" title="点标题可以折叠">
+                    <div class="stats-head" id="statsHead">
+                        <span class="stats-dot"></span>
+                        <b id="statsTitle">通话质量</b>
+                        <span class="chev" id="statsChev">▾</span>
+                    </div>
+                    <div class="stats-body">
+                        <div><em>码率</em><span id="statsBitrate">-</span></div>
+                        <div><em>分辨率</em><span id="statsRes">-</span></div>
+                        <div><em>往返</em><span id="statsRtt">-</span></div>
+                        <div><em>丢包</em><span id="statsLoss">-</span></div>
+                        <div><em>链路</em><span id="statsPath">-</span></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -866,6 +1106,22 @@
                 </svg>
                 <span id="screenLabel">共享屏幕</span>
             </button>
+
+            <button class="btn btn-control" id="deviceBtn" type="button">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6 1.65 1.65 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9c.14.49.57.85 1.09.91H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                </svg>
+                <span id="deviceLabel">设备</span>
+            </button>
+
+            <button class="btn btn-control" id="chatBtn" type="button" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+                </svg>
+                <span>聊天</span>
+                <span class="chat-dot" id="chatDot"></span>
+            </button>
         </div>
         <div class="button-row">
             <button class="btn btn-hangup" id="hangupBtn" disabled>挂断</button>
@@ -910,6 +1166,38 @@
             <button id="pwdCancel" type="button">取消</button>
             <button class="primary" id="pwdConfirm" type="button">加入</button>
         </div>
+    </div>
+</div>
+
+<!-- 设备选择弹窗 -->
+<div class="modal-mask" id="deviceMask">
+    <div class="modal">
+        <h3>音视频设备</h3>
+        <label for="camSelect">摄像头</label>
+        <select id="camSelect"></select>
+        <label for="micSelect">麦克风</label>
+        <select id="micSelect"></select>
+        <div class="hint" id="deviceHint">切换时直接换轨道，不重新协商，通话不会中断。</div>
+        <div class="modal-msg" id="deviceMsg"></div>
+        <div class="modal-actions">
+            <button id="deviceRefresh" type="button">刷新列表</button>
+            <button class="primary" id="deviceClose" type="button">完成</button>
+        </div>
+    </div>
+</div>
+
+<!-- 文字聊天抽屉（只在通话中可用） -->
+<div class="chat-drawer" id="chatDrawer">
+    <div class="chat-head">
+        <h3>聊天</h3>
+        <button class="close" id="chatClose" type="button" aria-label="关闭聊天">✕</button>
+    </div>
+    <div class="chat-list" id="chatList">
+        <div class="chat-empty" id="chatEmpty">还没有消息</div>
+    </div>
+    <div class="chat-input-row">
+        <input id="chatInput" type="text" maxlength="500" placeholder="说点什么…" autocomplete="off" disabled />
+        <button id="chatSend" type="button" disabled>发送</button>
     </div>
 </div>
 
@@ -1041,6 +1329,7 @@
         updateRemoteVideoUI();
         updateRemoteMicUI();
         $('remoteScreenBadge').classList.toggle('active', inCall && remoteScreenSharing);
+        syncChatUI();   // 聊天的可用性跟着"是否在通话"走
     }
 
     // ========== 屏幕共享 UI / 状态机 ==========
@@ -1202,6 +1491,192 @@
         v.play().catch((e) => console.warn('恢复声音失败', e));
     }
 
+    // ========== 文字聊天 ==========
+    // 消息只存在内存里（保留最近 100 条），刷新即清；服务端只做转发 + 500 字截断。
+    const CHAT_MAX_KEEP = 100;
+    let chatMessages = [];
+    let chatUnread = 0;
+
+    function syncChatUI() {
+        const canSend = inCall && ws && ws.readyState === WebSocket.OPEN;
+        $('chatBtn').disabled = !inCall;
+        $('chatInput').disabled = !canSend;
+        $('chatSend').disabled = !canSend;
+        if (!inCall) {
+            // 通话结束就收起抽屉并清空：聊天是"这一通电话"的聊天，不跨通话
+            closeChat();
+            chatMessages = [];
+            renderChat();
+            setChatUnread(0);
+        }
+    }
+
+    function toggleChat() {
+        if ($('chatDrawer').classList.contains('show')) closeChat();
+        else openChat();
+    }
+
+    function openChat() {
+        $('chatDrawer').classList.add('show');
+        setChatUnread(0);
+        setTimeout(() => { if (inCall && !$('chatInput').disabled) $('chatInput').focus(); }, 30);
+    }
+
+    function closeChat() {
+        $('chatDrawer').classList.remove('show');
+    }
+
+    function setChatUnread(n) {
+        chatUnread = n;
+        $('chatDot').classList.toggle('on', n > 0);
+    }
+
+    function chatClock(ts) {
+        const d = new Date(ts);
+        const p = (v) => String(v).padStart(2, '0');
+        return p(d.getHours()) + ':' + p(d.getMinutes());
+    }
+
+    function renderChat() {
+        const list = $('chatList');
+        list.innerHTML = '';
+        if (!chatMessages.length) {
+            const empty = document.createElement('div');
+            empty.className = 'chat-empty';
+            empty.textContent = inCall ? '还没有消息，打个招呼吧' : '通话中才能聊天';
+            list.appendChild(empty);
+            return;
+        }
+        chatMessages.forEach(m => {
+            const row = document.createElement('div');
+            row.className = 'chat-msg ' + (m.mine ? 'mine' : 'theirs');
+            const meta = document.createElement('span');
+            meta.className = 'meta';
+            meta.textContent = m.from + ' ' + chatClock(m.ts);
+            const body = document.createElement('span');
+            body.textContent = m.text;   // 用 textContent：对方发来的 HTML 只当文字显示，不执行
+            row.appendChild(meta);
+            row.appendChild(body);
+            list.appendChild(row);
+        });
+        list.scrollTop = list.scrollHeight;
+    }
+
+    function appendChatMessage(text, mine, from, ts) {
+        chatMessages.push({ text: text, mine: mine, from: from, ts: ts || Date.now() });
+        if (chatMessages.length > CHAT_MAX_KEEP) chatMessages = chatMessages.slice(-CHAT_MAX_KEEP);
+        renderChat();
+        if (!mine && !$('chatDrawer').classList.contains('show')) setChatUnread(chatUnread + 1);
+    }
+
+    function sendChat() {
+        const input = $('chatInput');
+        const text = input.value.replace(/\s+$/, '');
+        if (!text) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN || !inCall) {
+            updateStatus('当前不在通话中，消息没发出去', true);
+            return;
+        }
+        if (text.length > 500) {
+            input.value = text.slice(0, 500);
+            updateStatus('一条消息最多 500 字', true);
+            return;
+        }
+        ws.send(JSON.stringify({ type: "chat", text: text }));
+        input.value = '';
+        appendChatMessage(text, true, '我');
+    }
+
+    // ========== 通话质量（getStats） ==========
+    // 每 2 秒采一次，只做展示；不改码率（带宽自适应是另一件事，别混在一起）。
+    let statsTimer = null;
+    let lastBytes = 0;
+    let lastBytesTs = 0;
+
+    function startStatsPolling() {
+        if (statsTimer) return;
+        $('statsPanel').classList.add('active');
+        lastBytes = 0;
+        lastBytesTs = 0;
+        statsTimer = setInterval(pollStats, 2000);
+        pollStats();
+    }
+
+    function stopStatsPolling() {
+        if (statsTimer) {
+            clearInterval(statsTimer);
+            statsTimer = null;
+        }
+        const panel = $('statsPanel');
+        if (panel) {
+            panel.classList.remove('active', 'warn');
+            panel.classList.remove('collapsed');
+        }
+        lastBytes = 0;
+        lastBytesTs = 0;
+    }
+
+    async function pollStats() {
+        if (!peerConn || peerConn.signalingState === 'closed') return;
+        if (document.hidden) return;   // 后台标签页不采样，省 CPU
+        let report;
+        try {
+            report = await peerConn.getStats();
+        } catch (e) {
+            return;
+        }
+        let inbound = null;
+        let pair = null;
+        report.forEach(stat => {
+            if (stat.type === 'inbound-rtp' && stat.kind === 'video') inbound = stat;
+            if (stat.type === 'candidate-pair' && (stat.selected || (stat.nominated && stat.state === 'succeeded'))) {
+                pair = stat;
+            }
+        });
+
+        // 码率要用两次采样差分算：bytesReceived 本身是累计值
+        const bytes = inbound ? (inbound.bytesReceived || 0) : 0;
+        const now = performance.now();
+        let kbps = null;
+        if (lastBytesTs && bytes >= lastBytes) {
+            kbps = Math.round(((bytes - lastBytes) * 8) / (now - lastBytesTs));
+        }
+        if (bytes > 0) {
+            lastBytes = bytes;
+            lastBytesTs = now;
+        }
+
+        const rttMs = pair && typeof pair.currentRoundTripTime === 'number'
+            ? Math.round(pair.currentRoundTripTime * 1000)
+            : null;
+
+        let lossPct = null;
+        if (inbound) {
+            const lost = inbound.packetsLost || 0;
+            const received = inbound.packetsReceived || 0;
+            if (lost + received > 0) lossPct = (lost / (lost + received)) * 100;
+        }
+
+        // 看两端候选类型：任意一端是 relay 就说明媒体走了 TURN
+        let relayed = false;
+        if (pair) {
+            const lc = report.get(pair.localCandidateId);
+            const rc = report.get(pair.remoteCandidateId);
+            relayed = (lc && lc.candidateType === 'relay') || (rc && rc.candidateType === 'relay');
+        }
+
+        $('statsBitrate').textContent = kbps === null ? '-' : (kbps >= 1000 ? (kbps / 1000).toFixed(1) + ' Mbps' : kbps + ' kbps');
+        $('statsRes').textContent = inbound && inbound.frameWidth ? (inbound.frameWidth + '×' + inbound.frameHeight) : '-';
+        $('statsRtt').textContent = rttMs === null ? '-' : (rttMs + ' ms');
+        $('statsLoss').textContent = lossPct === null ? '-' : (lossPct < 0.1 ? '0%' : lossPct.toFixed(1) + '%');
+        $('statsPath').textContent = pair ? (relayed ? '中继（TURN）' : '直连（P2P）') : '-';
+
+        const bad = (rttMs !== null && rttMs > 300) || (lossPct !== null && lossPct > 5);
+        const panel = $('statsPanel');
+        panel.classList.toggle('warn', bad);
+        $('statsTitle').textContent = bad ? '网络不稳定' : '通话质量';
+    }
+
     function initPeerConnection() {
         if (peerConn) {
             peerConn.close();
@@ -1262,6 +1737,7 @@
                 updateStatus("通话中");
                 document.title = "通话中 - 影音视界";
                 if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+                startStatsPolling();
             } else if (state === 'disconnected') {
                 updateStatus("连接不稳定...", true);
                 if (!iceRestartTimer) {
@@ -1448,6 +1924,10 @@
                     await peerConn.addIceCandidate(data.data);
                 } catch(e) { console.warn("ICE candidate error", e); }
             }
+        } else if (data.type === "chat") {
+            // 服务端只转发，不存历史；发信人显示对方的名字
+            const who = ($('remoteLabel').textContent || '对方').trim();
+            appendChatMessage(String(data.text || ''), false, who || '对方', Date.now());
         } else if (data.type === "video_mute") {
             remoteVideoMuted = data.muted === true;
             // screen 字段由前端自己加，服务端只做原样转发（server.cpp 不解析 video_mute 内容）
@@ -1528,6 +2008,7 @@
         inCall = false;
         isInitiator = false;
         if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
+        stopStatsPolling();
 
         if (peerConn) {
             peerConn.close();
@@ -1641,17 +2122,219 @@
         }
     }
 
+    // ========== 设备选择 ==========
+    // 只记住 deviceId（权限仍由浏览器每次校验）。换设备用 replaceTrack 换轨道，
+    // 不新增轨道 = 不触发重协商，对方画面/声音不会中断（与屏幕共享同一套机制）。
+    const DEVICE_PREFS_KEY = 'webrtc.devicePrefs';
+
+    function loadDevicePrefs() {
+        try {
+            const raw = localStorage.getItem(DEVICE_PREFS_KEY);
+            const obj = raw ? JSON.parse(raw) : {};
+            return obj && typeof obj === 'object' ? obj : {};
+        } catch (e) {
+            return {};   // 隐私模式下 localStorage 可能抛异常，忽略即可
+        }
+    }
+
+    function saveDevicePrefs(patch) {
+        const prefs = Object.assign(loadDevicePrefs(), patch);
+        try {
+            localStorage.setItem(DEVICE_PREFS_KEY, JSON.stringify(prefs));
+        } catch (e) {
+            // 写不进去只是"下次不记得"，不影响本次通话
+        }
+    }
+
+    function cameraConstraints() {
+        const prefs = loadDevicePrefs();
+        const c = { width: { ideal: 1280 }, height: { ideal: 720 } };
+        if (prefs.cameraId) c.deviceId = { exact: prefs.cameraId };
+        return c;
+    }
+
+    function micConstraints() {
+        const prefs = loadDevicePrefs();
+        return prefs.micId ? { deviceId: { exact: prefs.micId } } : true;
+    }
+
+    // 记住的设备被拔掉时 getUserMedia 会抛 OverconstrainedError，
+    // 清掉偏好退回默认设备再试一次，比直接报错友好。
+    async function getCameraStream() {
+        try {
+            return await navigator.mediaDevices.getUserMedia({ video: cameraConstraints() });
+        } catch (e) {
+            if (e.name === 'OverconstrainedError' || e.name === 'ConstraintNotSatisfiedError') {
+                saveDevicePrefs({ cameraId: '' });
+                return await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
+            }
+            throw e;
+        }
+    }
+
+    async function getMicStream() {
+        try {
+            return await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
+        } catch (e) {
+            if (e.name === 'OverconstrainedError' || e.name === 'ConstraintNotSatisfiedError') {
+                saveDevicePrefs({ micId: '' });
+                return await navigator.mediaDevices.getUserMedia({ audio: true });
+            }
+            throw e;
+        }
+    }
+
+    function fillDeviceSelect(sel, items, emptyText) {
+        sel.innerHTML = '';
+        if (!items.length) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = emptyText;
+            sel.appendChild(opt);
+            sel.disabled = true;
+            return;
+        }
+        sel.disabled = false;
+        items.forEach((d, i) => {
+            const opt = document.createElement('option');
+            opt.value = d.deviceId;
+            opt.textContent = d.label || ('设备 ' + (i + 1));
+            sel.appendChild(opt);
+        });
+    }
+
+    async function refreshDeviceList() {
+        const prefs = loadDevicePrefs();
+        let devices = [];
+        try {
+            devices = await navigator.mediaDevices.enumerateDevices();
+        } catch (e) {
+            $('deviceMsg').textContent = '枚举设备失败：' + e.message;
+            return;
+        }
+        const cams = devices.filter(d => d.kind === 'videoinput');
+        const mics = devices.filter(d => d.kind === 'audioinput');
+        // 没授权时 label 全是空字符串——直接列出来用户会以为坏了，必须解释清楚
+        const noLabel = devices.length > 0 && devices.every(d => !d.label);
+        const emptyText = noLabel ? '授权后才能看到设备名' : '没有检测到设备';
+        fillDeviceSelect($('camSelect'), cams, emptyText);
+        fillDeviceSelect($('micSelect'), mics, emptyText);
+        const pick = (sel, wanted, list) => {
+            if (!list.length) return;
+            sel.value = list.some(d => d.deviceId === wanted) ? wanted : list[0].deviceId;
+        };
+        pick($('camSelect'), prefs.cameraId, cams);
+        pick($('micSelect'), prefs.micId, mics);
+        $('deviceHint').textContent = noLabel
+            ? '浏览器还没给设备权限：先点「开启摄像头」或「打开麦克风」授权一次，再点「刷新列表」。'
+            : '切换时直接换轨道，不重新协商，通话不会中断。';
+    }
+
+    async function openDeviceModal() {
+        $('deviceMsg').textContent = '';
+        $('deviceMask').classList.add('show');
+        await refreshDeviceList();
+    }
+
+    function closeDeviceModal() {
+        $('deviceMask').classList.remove('show');
+    }
+
+    async function applyCameraDevice(deviceId) {
+        if (!deviceId) return;
+        saveDevicePrefs({ cameraId: deviceId });
+        if (!videoStarted) {
+            $('deviceMsg').textContent = '已记住，下次开启摄像头时生效';
+            return;
+        }
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { deviceId: { exact: deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            });
+        } catch (e) {
+            showDeviceError(e, '摄像头');
+            $('deviceMsg').textContent = '切换失败：' + (e.name || e.message);
+            return;
+        }
+        const track = stream.getVideoTracks()[0];
+        // 不同摄像头给的默认分辨率不一样（有的 1080p），不限制的话画面会突然跳一下
+        try {
+            await track.applyConstraints({ width: { max: 1280 }, height: { max: 720 } });
+        } catch (e) { /* 不支持 applyConstraints 就算了，不影响通话 */ }
+        const old = cameraTrack;
+        cameraTrack = track;
+        const oldTracks = localStream.getVideoTracks();
+        if (screenSharing) {
+            // 共享中：只换掉待用的摄像头轨，停止共享时换回去
+            $('deviceMsg').textContent = '已记住，停止共享屏幕后生效';
+        } else if (videoSender) {
+            try {
+                await videoSender.replaceTrack(track);
+            } catch (e) {
+                console.error('换摄像头轨失败', e);
+                $('deviceMsg').textContent = '切换失败：' + e.message;
+                track.stop();
+                return;
+            }
+        }
+        oldTracks.forEach(t => { localStream.removeTrack(t); t.stop(); });
+        localStream.addTrack(track);
+        if (old && old !== track) old.stop();
+        if (!screenSharing) {
+            $('localVideo').srcObject = localStream;
+            $('deviceMsg').textContent = '已切换到：' + (track.label || '新摄像头');
+        }
+        updateVideoUI();
+    }
+
+    async function applyMicDevice(deviceId) {
+        if (!deviceId) return;
+        saveDevicePrefs({ micId: deviceId });
+        if (!micStarted) {
+            $('deviceMsg').textContent = '已记住，下次打开麦克风时生效';
+            return;
+        }
+        let stream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: { exact: deviceId } } });
+        } catch (e) {
+            showDeviceError(e, '麦克风');
+            $('deviceMsg').textContent = '切换失败：' + (e.name || e.message);
+            return;
+        }
+        const track = stream.getAudioTracks()[0];
+        track.enabled = !audioMuted;   // 保持当前的静音状态，不要因为换设备就把麦打开了
+        const oldTracks = localStream.getAudioTracks();
+        if (audioSender) {
+            try {
+                await audioSender.replaceTrack(track);
+            } catch (e) {
+                console.error('换麦克风轨失败', e);
+                $('deviceMsg').textContent = '切换失败：' + e.message;
+                track.stop();
+                return;
+            }
+        }
+        oldTracks.forEach(t => { localStream.removeTrack(t); t.stop(); });
+        localStream.addTrack(track);
+        $('deviceMsg').textContent = '已切换到：' + (track.label || '新麦克风');
+        updateMicUI();
+    }
+
     async function toggleMic() {
         if (!micStarted) {
             // 首次开启：获取设备（会弹一次权限请求），通话中则会触发一次重协商
             let stream;
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream = await getMicStream();
             } catch (e) {
                 showDeviceError(e, '麦克风');
                 return;
             }
             const track = stream.getAudioTracks()[0];
+            const actualMic = track.getSettings ? track.getSettings().deviceId : '';
+            if (actualMic) saveDevicePrefs({ micId: actualMic });
             localStream.addTrack(track);
             micStarted = true;
             audioMuted = false;
@@ -1682,12 +2365,14 @@
             // 首次开启：获取设备（会弹一次权限请求），通话中则会触发一次重协商
             let stream;
             try {
-                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                stream = await getCameraStream();
             } catch (e) {
                 showDeviceError(e, '摄像头');
                 return;
             }
             const track = stream.getVideoTracks()[0];
+            const actualCam = track.getSettings ? track.getSettings().deviceId : '';
+            if (actualCam) saveDevicePrefs({ cameraId: actualCam });
             cameraTrack = track;
             localStream.addTrack(track);
             videoStarted = true;
@@ -2204,6 +2889,43 @@
     $('videoBtn').onclick = toggleVideo;
     $('screenBtn').onclick = toggleScreenShare;
     $('unmuteBtn').onclick = enableRemoteAudio;
+
+    // 设备选择
+    $('deviceBtn').onclick = openDeviceModal;
+    $('deviceClose').onclick = closeDeviceModal;
+    $('deviceRefresh').onclick = refreshDeviceList;
+    $('camSelect').onchange = (e) => applyCameraDevice(e.target.value);
+    $('micSelect').onchange = (e) => applyMicDevice(e.target.value);
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+        // 插拔外接摄像头/耳机时刷新列表（没开弹层就等下次打开再刷，省一次枚举）
+        navigator.mediaDevices.addEventListener('devicechange', () => {
+            if ($('deviceMask').classList.contains('show')) refreshDeviceList();
+        });
+    }
+    // 手机/平板没有 getDisplayMedia：按钮留着只会让人点了报错
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        $('screenBtn').style.display = 'none';
+    }
+
+    // 聊天
+    $('chatBtn').onclick = toggleChat;
+    $('chatClose').onclick = closeChat;
+    $('chatSend').onclick = sendChat;
+    $('chatInput').addEventListener('keydown', (ev) => {
+        // 输入法候选框里的回车不能当发送（isComposing）
+        if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) {
+            ev.preventDefault();
+            sendChat();
+        }
+    });
+    renderChat();
+
+    // 质量面板折叠
+    $('statsHead').onclick = () => {
+        const panel = $('statsPanel');
+        panel.classList.toggle('collapsed');
+        $('statsChev').textContent = panel.classList.contains('collapsed') ? '▸' : '▾';
+    };
     $('logoutBtn').onclick = async () => {
         $('logoutBtn').disabled = true;
         await Auth.logout();

@@ -304,6 +304,27 @@ std::string parseHttpPath(const std::string& req) {
     return req.substr(path_start, path_end - path_start);
 }
 
+// 文字聊天一条消息的最大字符数（不是字节）。前端输入框也是 500。
+// 服务端必须自己再截一次：前端限制可以被绕过，一条几十 MB 的 chat 会把对端页面卡死。
+const size_t kMaxChatChars = 500;
+
+// 按 UTF-8 码点截断。不能按字节切——从半个汉字/emoji 中间切开，对端会拿到乱码。
+std::string TruncateUtf8(const std::string& s, size_t maxChars) {
+    size_t i = 0;
+    size_t chars = 0;
+    while (i < s.size() && chars < maxChars) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        size_t len = 1;
+        if (c >= 0xF0) len = 4;
+        else if (c >= 0xE0) len = 3;
+        else if (c >= 0xC0) len = 2;
+        if (i + len > s.size()) break;   // 末尾是残缺的多字节序列，直接丢掉
+        i += len;
+        ++chars;
+    }
+    return s.substr(0, i);
+}
+
 // ========== 运行指标（/stats）==========
 // 设计原则：热路径只做原子自增 + 一次取时间戳，不加锁、不拼字符串。
 // 采样接口（GET /stats）才去读 map 的大小、读 /proc，这些都不在消息路径上。
@@ -317,7 +338,7 @@ const int64_t g_startedAtSec = static_cast<int64_t>(::time(nullptr));
 
 enum MsgKind {
     kMsgAuth = 0, kMsgJoinRoom, kMsgOffer, kMsgAnswer, kMsgIce,
-    kMsgBye, kMsgVideoMute, kMsgMicMute, kMsgListRooms, kMsgOther,
+    kMsgBye, kMsgVideoMute, kMsgMicMute, kMsgListRooms, kMsgChat, kMsgOther,
     kMsgKindCount
 };
 
@@ -408,6 +429,7 @@ MsgKind MsgKindOf(const std::string& type) {
     if (type == "video_mute") return kMsgVideoMute;
     if (type == "mic_mute") return kMsgMicMute;
     if (type == "list_rooms") return kMsgListRooms;
+    if (type == "chat") return kMsgChat;
     return kMsgOther;
 }
 
@@ -514,7 +536,7 @@ Json::Value statsJson() {
 
     static const char* kMsgNames[kMsgKindCount] = {
         "auth", "join_room", "offer", "answer", "ice",
-        "bye", "video_mute", "mic_mute", "list_rooms", "other"};
+        "bye", "video_mute", "mic_mute", "list_rooms", "chat", "other"};
     for (int i = 0; i < kMsgKindCount; ++i) {
         root["messages"][kMsgNames[i]] = static_cast<Json::UInt64>(
             g_msg_count[i].load(std::memory_order_relaxed));
@@ -1310,8 +1332,30 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             continue;
         }
 
+        // 文字聊天：服务端只做两件事——限长 + 转发。服务端不存历史，
+        // 客户端只保留本次通话的最近 100 条（刷新即清）。
+        if (type == "chat") {
+            if (!root["text"].isString() || root["text"].asString().empty()) {
+                sendError(conn, "bad_request", "chat 消息缺少 text");
+                continue;
+            }
+            const std::string rawText = root["text"].asString();
+            const std::string text = TruncateUtf8(rawText, kMaxChatChars);
+            if (text.size() != rawText.size()) {
+                LOG_INFO << "chat 文本超长被截断：" << rawText.size()
+                         << " 字节 -> " << text.size() << " 字节";
+            }
+            // 重新组包再转发：只透传 type 与 text，避免客户端塞别的字段进来
+            Json::Value out;
+            out["type"] = "chat";
+            out["text"] = text;
+            Json::StreamWriterBuilder writer;
+            writer["indentation"] = "";
+            decoded = Json::writeString(writer, out);
+        }
+
         if (type == "offer" || type == "answer" || type == "ice" ||
-            type == "video_mute" || type == "mic_mute") {
+            type == "video_mute" || type == "mic_mute" || type == "chat") {
             // 转发耗时：找对端（走房间索引，O(1)）+ 组帧 + 投递。
             // 注意它包含日志开销，属于现状基线；LOG_PAYLOAD 关掉后这个数字应明显下降。
             LatencyTimer forwardTimer(g_lat_forward);
