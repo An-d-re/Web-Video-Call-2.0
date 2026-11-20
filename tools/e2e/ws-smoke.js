@@ -252,11 +252,27 @@ function get(p) {
   ok('建连后不发 auth，5 秒后被踢 -> auth_timeout',
     (!!e6 && e6.code === 'auth_timeout') || (e6 === null && mute.closed), { waitedMs: dt, got: e6 });
 
-  // 16. /stats 指标接口：没 token 必须 403（不能让人白看内部状态）
+  // 16. 限流：单条连接狂刷消息必须被掐断。
+  //     没有它，一条连接就能把服务端 CPU 打满，或者靠高频转发把对端带宽占满。
+  //     令牌桶是 60 条/秒、突发 120，所以一次性灌 400 条必然超限。
+  const flood = new Client('flood');
+  await flood.connect();
+  flood.send({ type: 'auth', token: accessToken(104, 'flood') });
+  await flood.wait(isType('auth_ok'));
+  for (let i = 0; i < 400; i++) {
+    if (flood.closed) break;
+    try { flood.send({ type: 'list_rooms' }); } catch (e) { break; }
+  }
+  const e7 = await flood.wait(isErr('rate_limited'), 5000, true);
+  ok('单连接高频发消息 -> rate_limited', !!e7 && e7.code === 'rate_limited', e7);
+  await flood.wait(isType('__never__'), 3000, true);
+  ok('被限流的连接随后被断开', flood.closed === true, { closed: flood.closed });
+
+  // 17. /stats 指标接口：没 token 必须 403（不能让人白看内部状态）
   const st1 = await get('/stats');
   ok('/stats 不带 token -> 403', st1.status === 403, { status: st1.status });
 
-  // 17. /stats 带对 token -> 200 且结构齐全（压测脚本和运维都靠它）
+  // 18. /stats 带对 token -> 200 且结构齐全（压测脚本和运维都靠它）
   const statsToken = process.env.STATS_TOKEN || '';
   if (!statsToken) {
     skip('/stats 带 token 返回结构正确的 JSON', '未设置 STATS_TOKEN，跳过');
@@ -269,11 +285,14 @@ function get(p) {
     ok('/stats 带 token -> 200 且字段齐全', st2.status === 200 && missing.length === 0,
       { status: st2.status, missing, sample: j ? { uptime: j.uptimeSeconds, ws: j.connections && j.connections.ws } : st2.body.slice(0, 120) });
     const shapeOk = !!j && j.latencyUs && j.latencyUs.join_room && j.latencyUs.forward
-      && typeof j.messages.auth === 'number' && typeof j.errors.auth_fail === 'number';
+      && typeof j.messages.auth === 'number' && typeof j.errors.auth_fail === 'number'
+      && typeof j.errors.rate_limited === 'number' && typeof j.errors.slow_client === 'number';
     ok('/stats 延迟与计数结构可直接用于压测', shapeOk, j ? { joinSamples: j.latencyUs.join_room.samples } : null);
+    // 刚才那条 flood 连接必须被记到 rate_limited 上，否则等于"限流生效了但没人知道"
+    ok('/stats 里记到了 rate_limited', !!j && j.errors.rate_limited >= 1, j && j.errors);
   }
 
-  [bad, confused, sneak, alice, bob, carol, mute].forEach((c) => c.close());
+  [bad, confused, sneak, alice, bob, carol, mute, flood].forEach((c) => c.close());
 
   console.log(`\n合计: ${pass} 通过, ${fail} 失败${skipped ? ', ' + skipped + ' 跳过' : ''}`);
   process.exit(fail === 0 ? 0 : 1);
