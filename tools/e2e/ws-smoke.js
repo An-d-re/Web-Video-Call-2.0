@@ -227,6 +227,25 @@ function get(p) {
   const fwd = await bob.wait(isType('offer'));
   ok('offer 被转发给房内对端', !!fwd && fwd.sdp && fwd.sdp.sdp === 'v=0 fake', fwd);
 
+  // 12.1 文字聊天：服务端只做「限长 + 转发」，不存历史
+  alice.send({ type: 'chat', text: '你好，能听到吗？' });
+  const chat1 = await bob.wait(isType('chat'));
+  ok('chat 被转发给房内对端', !!chat1 && chat1.text === '你好，能听到吗？', chat1);
+
+  // 12.2 超长截断：按「字符」截到 500，不能把多字节汉字切成半个
+  const longCn = '字'.repeat(600);   // 每个汉字 3 字节，共 1800 字节
+  alice.send({ type: 'chat', text: longCn });
+  const chat2 = await bob.wait(isType('chat'), 4000);
+  const cutBytes = chat2 && typeof chat2.text === 'string' ? Buffer.byteLength(chat2.text, 'utf8') : -1;
+  ok('超长 chat 被截到 500 字符（1500 字节，未切坏汉字）',
+    !!chat2 && Array.from(chat2.text).length === 500 && cutBytes === 1500,
+    { chars: chat2 ? Array.from(chat2.text).length : -1, bytes: cutBytes });
+
+  // 12.3 只有 type 没有 text：不能静默转发空消息，要明确报错
+  alice.send({ type: 'chat' });
+  const eChat = await alice.wait(isType('error'), 4000);
+  ok('缺 text 的 chat -> bad_request', !!eChat && eChat.code === 'bad_request', eChat);
+
   // 13. bye：对端收到，且房间腾出座位。
   //     这两条是当初两个 P0 bug 的回归用例：byeSent 不复位导致第二个 bye 根本不发；
   //     g_bye_processed 不清导致同一连接二次 bye 被当重复丢弃、连接永久占着座位。

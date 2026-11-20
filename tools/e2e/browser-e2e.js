@@ -428,6 +428,106 @@ async function loginFlow(cdp, user, pass, displayName) {
     ok('整个过程只调用了一次 getDisplayMedia（没有重复采集）',
       (await pa.evaluate('window.__displayCalls')) === 1);
 
+    console.log('\n-- 通话质量面板（getStats 轮询）--');
+    ok('质量面板在通话中自动显示',
+      await waitFor(pa, "document.querySelector('#statsPanel').classList.contains('active')", 15000, 'A 质量面板'));
+    // 码率是两次采样的差分，第一次轮询只记基线、还没有数字，所以这里要等一拍
+    ok('面板里有码率数字（不是占位符 -）',
+      await waitFor(pa, "/\\d/.test(document.querySelector('#statsBitrate').textContent)", 12000, '码率数字'),
+      String(await pa.evaluate("document.querySelector('#statsBitrate').textContent")));
+    ok('面板识别出链路类型（直连或中继）',
+      /直连|中继/.test(String(await pa.evaluate("document.querySelector('#statsPath').textContent"))));
+    ok('面板有往返时延数字',
+      /\d/.test(String(await pa.evaluate("document.querySelector('#statsRtt').textContent"))));
+    await click(pa, '#statsHead');
+    ok('点标题可以折叠面板',
+      await waitFor(pa, "document.querySelector('#statsPanel').classList.contains('collapsed')", 5000, '折叠'));
+    await click(pa, '#statsHead');
+    ok('再点一下展开',
+      await waitFor(pa, "!document.querySelector('#statsPanel').classList.contains('collapsed')", 5000, '展开'));
+
+    console.log('\n-- 文字聊天（服务端只转发，不落库）--');
+    const chatBtnDisabled = await pa.evaluate("document.querySelector('#chatBtn').disabled");
+    await click(pa, '#chatBtn');
+    ok('通话中「聊天」按钮可用，点开后抽屉滑出',
+      chatBtnDisabled === false &&
+      await waitFor(pa, "document.querySelector('#chatDrawer').classList.contains('show')", 5000, '抽屉滑出'));
+    await setVal(pa, '#chatInput', '你好，能看到我的屏幕吗？');
+    await click(pa, '#chatSend');
+    ok('A 发出的消息出现在自己列表里（mine）',
+      await waitFor(pa, "/你好，能看到我的屏幕吗？/.test(document.querySelector('#chatList').textContent) && document.querySelectorAll('#chatList .chat-msg.mine').length >= 1", 8000, 'A 自己的消息'));
+    ok('B 抽屉关着时收到未读红点',
+      await waitFor(pb, "document.querySelector('#chatDot').classList.contains('on')", 12000, 'B 未读点'));
+    await click(pb, '#chatBtn');
+    ok('B 打开抽屉看到同一条消息（theirs）',
+      await waitFor(pb, "/你好，能看到我的屏幕吗？/.test(document.querySelector('#chatList').textContent) && document.querySelectorAll('#chatList .chat-msg.theirs').length >= 1", 8000, 'B 收到的消息'));
+    ok('打开抽屉后未读红点消失',
+      await waitFor(pb, "!document.querySelector('#chatDot').classList.contains('on')", 5000, '红点消失'));
+
+    // 消息内容必须当纯文本渲染：聊天是唯一能让"对方"往你页面上塞任意字符串的通道
+    await setVal(pb, '#chatInput', '<img src=x onerror="window.__pwned=1">');
+    await click(pb, '#chatSend');
+    await waitFor(pa, "/<img src=x/.test(document.querySelector('#chatList').textContent)", 8000, 'A 收到注入串');
+    await sleep(600);
+    ok('消息里的 HTML 被当纯文本（列表里没有 img 节点）',
+      (await pa.evaluate("document.querySelectorAll('#chatList img').length")) === 0);
+    ok('注入的 onerror 没有被执行', (await pa.evaluate('!!window.__pwned')) === false);
+
+    const msgsBeforeBlank = await pa.evaluate("document.querySelectorAll('#chatList .chat-msg').length");
+    await setVal(pa, '#chatInput', '    ');
+    await click(pa, '#chatSend');
+    await sleep(500);
+    ok('只输入空白不会发出消息',
+      (await pa.evaluate("document.querySelectorAll('#chatList .chat-msg').length")) === msgsBeforeBlank);
+
+    console.log('\n-- 设备切换（replaceTrack，不重新协商）--');
+    const camDevices = await pa.evaluate(
+      "(async () => { const d = await navigator.mediaDevices.enumerateDevices(); return d.filter(x => x.kind === 'videoinput').map(x => x.deviceId); })()");
+    ok('enumerateDevices 能列出摄像头', Array.isArray(camDevices) && camDevices.length >= 1, camDevices);
+    const sigBeforeSwitch = await pa.evaluate('peerConn.signalingState');
+    const camTrackBefore = await pa.evaluate('cameraTrack.id');
+    await click(pa, '#deviceBtn');
+    ok('「设备」弹窗打开并列出摄像头与麦克风',
+      await waitFor(pa, "document.querySelector('#deviceMask').classList.contains('show') && document.querySelectorAll('#camSelect option').length >= 1 && document.querySelectorAll('#micSelect option').length >= 1", 12000, '设备弹窗'));
+    // 选同一个摄像头也会重新采集一次并走 replaceTrack，正好用来验证"换轨不重协商"
+    await pa.evaluate("(() => { const sel = document.querySelector('#camSelect'); sel.selectedIndex = 0; sel.dispatchEvent(new Event('change')); })()");
+    ok('切换摄像头后新轨已挂到 sender 上、本地预览也是新轨',
+      await waitFor(pa, `(() => { const t = cameraTrack; if (!t) return false; if (t.id === ${JSON.stringify(camTrackBefore)}) return false; if (t.readyState !== 'live') return false; if (!peerConn.getSenders().some(s => s.track && s.track.id === t.id)) return false; const lv = document.querySelector('#localVideo').srcObject; return !!(lv && lv.getVideoTracks()[0] && lv.getVideoTracks()[0].id === t.id); })()`, 15000, '换轨完成'));
+    ok('换摄像头没有触发重新协商（signalingState 保持 stable）',
+      (await pa.evaluate('peerConn.signalingState')) === sigBeforeSwitch, sigBeforeSwitch);
+    ok('对端画面没有中断（换轨后仍在接收视频）',
+      await waitFor(pb, "document.querySelector('#remoteVideo').videoWidth > 0", 15000, 'B 换设备后仍有画面'));
+    await click(pa, '#deviceClose');
+
+    console.log('\n-- 手机布局（390x844 模拟）--');
+    await pa.send('Emulation.setDeviceMetricsOverride', {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true
+    });
+    await sleep(800);
+    const mobile = await pa.evaluate(`(() => {
+      const doc = document.documentElement;
+      const local = document.querySelector('#localCard').getBoundingClientRect();
+      const remote = document.querySelector('#remoteCard').getBoundingClientRect();
+      const btn = document.querySelector('.btn-control').getBoundingClientRect();
+      const drawer = document.querySelector('#chatDrawer').getBoundingClientRect();
+      return {
+        innerW: window.innerWidth,
+        scrollW: doc.scrollWidth,
+        localRight: Math.round(local.right),
+        localWidth: Math.round(local.width),
+        remoteW: Math.round(remote.width),
+        btnH: Math.round(btn.height),
+        drawerW: Math.round(drawer.width)
+      };
+    })()`);
+    ok('390px 宽度下没有横向滚动条', mobile.scrollW <= 391, mobile);
+    ok('移动端本地画面变成右下角小窗（宽度远小于屏宽）',
+      mobile.localWidth > 0 && mobile.localWidth <= 160 && mobile.localRight <= 391, mobile);
+    ok('移动端远端画面占满宽度', mobile.remoteW >= 360, mobile);
+    ok('移动端控制按钮高度不小于 44px（拇指可点）', mobile.btnH >= 44, mobile);
+    ok('移动端聊天抽屉按整屏宽展开', mobile.drawerW >= 380, mobile);
+    await pa.send('Emulation.clearDeviceMetricsOverride');
+
     console.log('\n-- 挂断 --');
     await click(pa, '#hangupBtn');
     const bSawBye = await waitFor(pb, "/已挂断|对方已离开|通话已结束|等待加入/.test(document.querySelector('#status').textContent)", 10000, 'B 感知到挂断');
