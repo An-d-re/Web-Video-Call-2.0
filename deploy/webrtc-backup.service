@@ -1,0 +1,16 @@
+[Unit]
+Description=WebRTC 数据库备份（pg_dump 自定义格式）
+Documentation=https://github.com/An-d-re/Web-Video-Call-2.0
+After=postgresql.service
+# 数据库没起来时不用重试太久，第二天还有机会；这里只兜一次
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/webrtc-backup
+# 备份是重 IO 操作，别和业务抢
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# 五分钟还没跑完基本就是卡住了（我们的库只有几十 MB）
+TimeoutStartSec=300

@@ -1,0 +1,14 @@
+[Unit]
+Description=每日 03:15 备份 WebRTC 数据库
+
+[Timer]
+# 凌晨三点是这套系统最闲的时候（演示环境连晚上都没人用）
+OnCalendar=*-*-* 03:15:00
+# 加一点随机抖动，避免和系统里其他定时任务撞在同一秒
+RandomizedDelaySec=10m
+# 机器在 03:15 是关机的，开机后补跑一次
+Persistent=true
+Unit=webrtc-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -9,7 +9,9 @@
 #   5. 装 nginx 站点（80 跳 443；/ → 静态页，/api/ → Go，/ws → C++）
 #   6. 装 coturn 并生成 /opt/webrtc/turn_config.json（动态 TURN 凭据）
 #   7. 跑数据库迁移（需要 DATABASE_URL）
-#   8. systemd 拉起 webrtc-auth + webrtc-signaling，开机自启
+#   8. 装 Prometheus 抓信令的 /metrics（保留 7 天）
+#   9. 装每日数据库备份（systemd timer，03:15，保留 7 天）
+#  10. systemd 拉起 webrtc-auth + webrtc-signaling，开机自启
 #
 # 用法（在仓库根目录）：
 #   sudo DATABASE_URL='postgres://webrtc:pw@127.0.0.1:5432/webrtc?sslmode=disable' \
@@ -24,7 +26,8 @@
 #   TURN_PUBLIC_IP  云主机在 NAT 后面时填公网 IP（写进 coturn 的 external-ip，
 #                   并作为 turn_config.json 里的地址；不填则探测本机网卡）
 #
-# 可选参数：--server <bin> --auth <bin> --static <dir> --prefix <dir> --skip-db --no-turn
+# 可选参数：--server <bin> --auth <bin> --static <dir> --prefix <dir> --skip-db
+#           --no-turn --no-metrics --no-backup
 set -euo pipefail
 
 PREFIX=/opt/webrtc
@@ -33,6 +36,8 @@ AUTH_BIN=""
 STATIC_DIR=""
 SKIP_DB=0
 ENABLE_TURN=1
+ENABLE_METRICS=1
+ENABLE_BACKUP=1
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
@@ -46,6 +51,8 @@ while [[ $# -gt 0 ]]; do
         --prefix)   PREFIX="$2"; shift 2 ;;
         --skip-db)  SKIP_DB=1; shift ;;
         --no-turn)  ENABLE_TURN=0; shift ;;
+        --no-metrics) ENABLE_METRICS=0; shift ;;
+        --no-backup)  ENABLE_BACKUP=0; shift ;;
         -h|--help)  sed -n '2,/^set -euo/p' "$0"; exit 0 ;;
         *) die "未知参数：$1" ;;
     esac
@@ -304,6 +311,66 @@ else
     warn "按要求跳过数据库迁移（--skip-db）"
 fi
 
+# ---------- 6.5 Prometheus 指标采集 ----------
+if [[ $ENABLE_METRICS -eq 1 ]]; then
+    log "安装 Prometheus（抓取信令的 /metrics）"
+    if ! dpkg -s prometheus >/dev/null 2>&1; then
+        apt-get update -qq || true
+        if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq prometheus >/tmp/apt-prom.log 2>&1; then
+            warn "Prometheus 安装失败，跳过（日志见 /tmp/apt-prom.log 末尾）"
+            tail -3 /tmp/apt-prom.log || true
+            ENABLE_METRICS=0
+        fi
+    fi
+    if [[ $ENABLE_METRICS -eq 1 ]]; then
+        install -d -m 0755 /etc/prometheus
+        # 令牌从这里渲染进配置：prometheus 以 prometheus 用户运行，文件给 0640 就够
+        sed -e "s|__STATS_TOKEN__|$STATS_TOKEN|g" \
+            -e "s|__SIGNALING_PORT__|8888|g" \
+            "$REPO_DIR/deploy/prometheus.yml" > /etc/prometheus/prometheus.yml
+        chown root:prometheus /etc/prometheus/prometheus.yml 2>/dev/null || true
+        chmod 0640 /etc/prometheus/prometheus.yml
+        # 默认保留 15 天，这台机器磁盘只有 40G，缩到 7 天；
+        # 顺带把监听地址收到 127.0.0.1 —— Prometheus 的 /graph 没有任何鉴权，
+        # 而它跑的是 root 起的 systemd 服务，不该出现在局域网里。
+        PROM_ARGS='ARGS="--web.listen-address=127.0.0.1:9090 --storage.tsdb.retention.time=7d"'
+        if grep -q '^ARGS=' /etc/default/prometheus 2>/dev/null; then
+            sed -i "s|^ARGS=.*|$PROM_ARGS|" /etc/default/prometheus
+        else
+            install -d -m 0755 /etc/default
+            printf '%s\n' "$PROM_ARGS" >> /etc/default/prometheus
+        fi
+        systemctl enable prometheus >/dev/null 2>&1 || true
+        systemctl restart prometheus
+        sleep 2
+        systemctl is-active prometheus >/dev/null 2>&1 \
+            && log "Prometheus：http://127.0.0.1:9090（每 15 秒抓一次，保留 7 天）" \
+            || warn "Prometheus 没起来，查 journalctl -u prometheus"
+    fi
+else
+    warn "按要求跳过 Prometheus（--no-metrics）"
+fi
+
+# ---------- 6.6 每日数据库备份 ----------
+if [[ $ENABLE_BACKUP -eq 1 ]]; then
+    log "安装每日数据库备份（03:15，保留 7 天）"
+    install -m 0755 "$REPO_DIR/deploy/backup.sh" /usr/local/bin/webrtc-backup
+    install -m 0644 "$REPO_DIR/deploy/webrtc-backup.service" /etc/systemd/system/webrtc-backup.service
+    install -m 0644 "$REPO_DIR/deploy/webrtc-backup.timer"   /etc/systemd/system/webrtc-backup.timer
+    install -d -m 0700 /var/backups/webrtc
+    systemctl daemon-reload
+    systemctl enable webrtc-backup.timer >/dev/null 2>&1 || warn "备份 timer 启用失败"
+    systemctl start webrtc-backup.timer >/dev/null 2>&1 || true
+    # 立刻跑一次：装完就能看到一份备份，比"明天三点才知道有没有效"强
+    if systemctl start webrtc-backup.service; then
+        log "首次备份完成：$(ls -1t /var/backups/webrtc/*.dump 2>/dev/null | head -1)"
+    else
+        warn "首次备份失败，查 journalctl -u webrtc-backup"
+    fi
+else
+    warn "按要求跳过备份（--no-backup）"
+fi
+
 # ---------- 7. systemd ----------
 log "安装并启动 systemd 服务"
 install -m 0644 "$REPO_DIR/deploy/webrtc-auth.service"      /etc/systemd/system/webrtc-auth.service
@@ -323,6 +390,14 @@ echo "  自签证书：首次打开会告警，点「高级 → 继续前往」�
 echo "  日志：   journalctl -u webrtc-signaling -f    journalctl -u webrtc-auth -f"
 if [[ $ENABLE_TURN -eq 1 ]]; then
     echo "  TURN：   ${IP}:3478（udp/tcp），中继端口 49160-49200/udp"
+fi
+if [[ $ENABLE_METRICS -eq 1 ]]; then
+    echo "  指标：   GET /stats?token=...（JSON）  GET /metrics?token=...（Prometheus 文本）"
+    echo "  采集：   http://127.0.0.1:9090/targets  http://127.0.0.1:9090/graph"
+fi
+if [[ $ENABLE_BACKUP -eq 1 ]]; then
+    echo "  备份：   /var/backups/webrtc（每天 03:15，保留 7 天）"
+    echo "  验证：   sudo bash tools/ops/restore-drill.sh   # 恢复进临时库比对行数"
 fi
 echo
 echo "  安全提示：8888（信令）与 8080（认证）是内部端口，正常只应被 nginx 反代。"

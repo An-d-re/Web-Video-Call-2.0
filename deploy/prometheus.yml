@@ -1,0 +1,25 @@
+# 由 deploy/install.sh 渲染：__STATS_TOKEN__ 会被替换成真实的 STATS_TOKEN，
+# __SIGNALING_PORT__ 会被替换成信令端口（默认 8888）。
+#
+# 只抓两个本机目标：
+#   webrtc-signaling  —— 业务指标（连接、房间、延迟、错误）
+#   prometheus        —— 抓自己，用来判断"采集链路本身"是否活着：
+#                        如果它 DOWN 说明问题在 Prometheus 而不在业务
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: webrtc-signaling
+    metrics_path: /metrics
+    # 信令的 /metrics 与 /stats 同一套鉴权：token 走查询参数
+    params:
+      token: ["__STATS_TOKEN__"]
+    static_configs:
+      - targets: ["127.0.0.1:__SIGNALING_PORT__"]
+        labels:
+          service: webrtc-signaling
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["127.0.0.1:9090"]

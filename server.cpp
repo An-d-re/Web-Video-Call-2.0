@@ -351,6 +351,15 @@ enum ErrKind {
 };
 std::atomic<uint64_t> g_err_count[kErrKindCount];
 
+// 指标名只写一份：/stats 的 JSON 键与 /metrics 的 label 值都用这里，
+// 否则两处各写一套字符串，加一个消息类型时很容易只改一处。
+const char* const kMsgNames[kMsgKindCount] = {
+    "auth", "join_room", "offer", "answer", "ice",
+    "bye", "video_mute", "mic_mute", "list_rooms", "chat", "other"};
+const char* const kErrNames[kErrKindCount] = {
+    "auth_fail", "auth_timeout", "room_full", "invalid_room_token", "bad_json",
+    "rate_limited", "slow_client"};
+
 // 延迟直方图：固定分桶，分位数按桶上界估算（误差不超过桶宽）。
 // 为什么不用记录所有样本：压测时每秒上万条消息，存样本会把内存吃光。
 const uint64_t kLatBucketUs[] = {100, 250, 500, 1000, 2500, 5000, 10000, 25000, 50000};
@@ -534,17 +543,11 @@ Json::Value statsJson() {
     root["rooms"]["full"] = static_cast<Json::UInt>(roomFull);
     root["rooms"]["members"] = static_cast<Json::UInt>(roomMembers);
 
-    static const char* kMsgNames[kMsgKindCount] = {
-        "auth", "join_room", "offer", "answer", "ice",
-        "bye", "video_mute", "mic_mute", "list_rooms", "chat", "other"};
     for (int i = 0; i < kMsgKindCount; ++i) {
         root["messages"][kMsgNames[i]] = static_cast<Json::UInt64>(
             g_msg_count[i].load(std::memory_order_relaxed));
     }
 
-    static const char* kErrNames[kErrKindCount] = {
-        "auth_fail", "auth_timeout", "room_full", "invalid_room_token", "bad_json",
-        "rate_limited", "slow_client"};
     for (int i = 0; i < kErrKindCount; ++i) {
         root["errors"][kErrNames[i]] = static_cast<Json::UInt64>(
             g_err_count[i].load(std::memory_order_relaxed));
@@ -556,6 +559,126 @@ Json::Value statsJson() {
     root["resources"]["rssMb"] = readRssMb();
     root["resources"]["fds"] = static_cast<Json::Int>(countOpenFds());
     return root;
+}
+
+// ========== Prometheus 指标输出 ==========
+// 与 /stats 同源，只是换成了 exposition 文本格式（text/plain; version=0.0.4）。
+// 为什么不直接把 JSON 转过去：JSON 里分位数是嵌套结构（"p95": 250），
+// 而 Prometheus 要求每个分位是独立的一条时序、用 quantile label 区分，
+// 所以这里单独拼一份文本，顺便把每个指标的 HELP/TYPE 写清楚。
+//
+// 刻意不提供 reset：counter 一旦被清零就违反单调性，采集端的 rate()/increase()
+// 会算出负数。压测要"只看这一轮"请用 /stats?reset=1 —— 那是给人看的，不是给采集器看的。
+std::string fmtMetricValue(double v, int precision) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.*f", precision, v);
+    return std::string(buf);
+}
+
+std::string metricsText() {
+    // 先把数字取成快照，保证同一个响应里各条时序是同一时刻的读数。
+    // 这里会短暂持几把锁：采集间隔通常是 15s，与消息热路径无关，可以接受。
+    size_t wsCount = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_clients_mutex);
+        wsCount = g_ws_clients.size();
+    }
+    size_t authedCount = 0;
+    for (int i = 0; i < kAuthShards; ++i) {
+        std::lock_guard<std::mutex> lock(g_auth_shards[i].mutex);
+        for (const auto& kv : g_auth_shards[i].map) {
+            if (kv.second.authenticated) ++authedCount;
+        }
+    }
+    size_t roomTotal = 0, roomFull = 0, roomMembers = 0;
+    {
+        std::lock_guard<std::mutex> lock(g_rooms_mutex);
+        roomTotal = g_rooms.size();
+        for (const auto& kv : g_rooms) {
+            roomMembers += kv.second.size();
+            if (kv.second.size() >= 2) ++roomFull;
+        }
+    }
+    const int64_t uptime = static_cast<int64_t>(::time(nullptr)) - g_startedAtSec;
+
+    std::ostringstream out;
+    out << "# HELP webrtc_uptime_seconds 服务启动至今的秒数\n"
+           "# TYPE webrtc_uptime_seconds gauge\n"
+           "webrtc_uptime_seconds " << uptime << "\n";
+
+    out << "# HELP webrtc_connections 当前连接数（按鉴权状态区分）\n"
+           "# TYPE webrtc_connections gauge\n"
+           "webrtc_connections{state=\"ws\"} " << wsCount << "\n"
+           "webrtc_connections{state=\"authed\"} " << authedCount << "\n"
+           "webrtc_connections{state=\"unauthenticated\"} "
+        << (wsCount > authedCount ? wsCount - authedCount : 0) << "\n";
+
+    out << "# HELP webrtc_rooms 当前房间数\n"
+           "# TYPE webrtc_rooms gauge\n"
+           "webrtc_rooms{state=\"total\"} " << roomTotal << "\n"
+           "webrtc_rooms{state=\"full\"} " << roomFull << "\n";
+
+    out << "# HELP webrtc_room_members 所有房间里的成员总数（一个人只算一次）\n"
+           "# TYPE webrtc_room_members gauge\n"
+           "webrtc_room_members " << roomMembers << "\n";
+
+    out << "# HELP webrtc_messages_total 收到的信令消息数（按类型）\n"
+           "# TYPE webrtc_messages_total counter\n";
+    for (int i = 0; i < kMsgKindCount; ++i) {
+        out << "webrtc_messages_total{type=\"" << kMsgNames[i] << "\"} "
+            << g_msg_count[i].load(std::memory_order_relaxed) << "\n";
+    }
+
+    out << "# HELP webrtc_errors_total 错误计数（按错误码）\n"
+           "# TYPE webrtc_errors_total counter\n";
+    for (int i = 0; i < kErrKindCount; ++i) {
+        out << "webrtc_errors_total{code=\"" << kErrNames[i] << "\"} "
+            << g_err_count[i].load(std::memory_order_relaxed) << "\n";
+    }
+
+    const std::pair<const char*, const LatencyHist*> paths[] = {
+        {"join_room", &g_lat_join_room},
+        {"forward", &g_lat_forward}
+    };
+
+    // 命名遵循 Prometheus 的约定：单位用基本单位（秒/字节），不用 us、mb 这种缩写，
+    // 也不把 quantile 当普通 label 用（那是 summary/histogram 专用，promtool 会报错）。
+    out << "# HELP webrtc_latency_seconds 处理延迟分位（秒，按直方图桶上界估算）\n"
+           "# TYPE webrtc_latency_seconds gauge\n";
+    for (const auto& p : paths) {
+        out << "webrtc_latency_seconds{path=\"" << p.first << "\",stat=\"p50\"} "
+            << fmtMetricValue(p.second->percentile(50) / 1e6, 6) << "\n"
+            << "webrtc_latency_seconds{path=\"" << p.first << "\",stat=\"p95\"} "
+            << fmtMetricValue(p.second->percentile(95) / 1e6, 6) << "\n"
+            << "webrtc_latency_seconds{path=\"" << p.first << "\",stat=\"p99\"} "
+            << fmtMetricValue(p.second->percentile(99) / 1e6, 6) << "\n";
+    }
+
+    out << "# HELP webrtc_latency_seconds_max 处理延迟的最大值（秒）\n"
+           "# TYPE webrtc_latency_seconds_max gauge\n";
+    for (const auto& p : paths) {
+        out << "webrtc_latency_seconds_max{path=\"" << p.first << "\"} "
+            << fmtMetricValue(
+                   p.second->maxUs.load(std::memory_order_relaxed) / 1e6, 6) << "\n";
+    }
+
+    out << "# HELP webrtc_latency_samples 延迟统计的样本数\n"
+           "# TYPE webrtc_latency_samples gauge\n";
+    for (const auto& p : paths) {
+        out << "webrtc_latency_samples{path=\"" << p.first << "\"} "
+            << p.second->count.load(std::memory_order_relaxed) << "\n";
+    }
+
+    out << "# HELP webrtc_resident_memory_bytes 进程常驻内存（字节）\n"
+           "# TYPE webrtc_resident_memory_bytes gauge\n"
+           "webrtc_resident_memory_bytes "
+        << static_cast<uint64_t>(readRssMb() * 1024.0 * 1024.0) << "\n";
+
+    out << "# HELP webrtc_open_fds 当前打开的文件描述符数\n"
+           "# TYPE webrtc_open_fds gauge\n"
+           "webrtc_open_fds " << countOpenFds() << "\n";
+
+    return out.str();
 }
 
 // /stats 的访问控制：
@@ -1044,6 +1167,19 @@ void onMessage(const TcpConnectionPtr& conn, Buffer* buf, Timestamp) {
             }
             sendHttp(conn, 200, "OK", "application/json; charset=utf-8",
                      statsJson().toStyledString());
+            return;
+        }
+
+        // /metrics：给 Prometheus 抓的文本格式。鉴权规则与 /stats 完全一致，
+        // 同样只监听信令端口、不经 nginx，所以外网拿不到。
+        if (file_path == "/metrics" || file_path.compare(0, 9, "/metrics?") == 0) {
+            if (!statsAllowed(conn, file_path)) {
+                sendHttp(conn, 403, "Forbidden", "text/plain; charset=utf-8",
+                         "# forbidden: 需要 ?token= 或从本机访问\n");
+                return;
+            }
+            sendHttp(conn, 200, "OK", "text/plain; version=0.0.4; charset=utf-8",
+                     metricsText());
             return;
         }
 
@@ -1651,8 +1787,8 @@ int main() {
     }
     LOG_INFO << "WebSocket 心跳：每 30 秒 ping，连续两次无 pong 回收连接";
     LOG_INFO << "鉴权：" << (g_auth_required ? "开启（需在 5 秒内 auth）" : "关闭（匿名模式）");
-    LOG_INFO << "指标接口：/stats " << (g_stats_token.empty() ? "（仅本机可访问）"
-                                                              : "（需要 STATS_TOKEN）");
+    LOG_INFO << "指标接口：/stats（JSON）、/metrics（Prometheus 文本）"
+             << (g_stats_token.empty() ? "，仅本机可访问" : "，需要 STATS_TOKEN");
     LOG_INFO << "消息日志：" << (g_log_payload ? "含消息原文（LOG_PAYLOAD=1）"
                                                : "只记类型与长度（LOG_PAYLOAD=1 可打开）");
     LOG_INFO << "优雅下线：收到 SIGTERM/SIGINT 会先通知客户端再退出";
