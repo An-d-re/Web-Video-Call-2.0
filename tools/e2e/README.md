@@ -7,7 +7,10 @@
 | `ws-smoke.js` | C++ 信令服务的协议状态机：鉴权超时、凭证类型隔离、座位分配、offer/answer/bye 转发、空房间回收、TURN 临时凭据签发、聊天转发与截断、`/stats`、限流 | 只需能连到信令端口 | 否 |
 | `e2e-fullstack.js` | 整条链路的接线：nginx 反代、Go 认证服务 + PostgreSQL、wss 升级、建房/密码/解散 | 已按 `deploy/install.sh` 部署 | 否 |
 | `browser-e2e.js` | 浏览器里真的能打通：getUserMedia、SDP/ICE 协商、远端画面渲染、自动播放兜底、屏幕共享（替换视频源不重协商）、通话质量面板、文字聊天（含 XSS 转义）、设备热切换、手机布局、挂断；加 `--relay` 还能验证 TURN 中继 | 两个 Chromium 内核浏览器 + 完整部署 | 是 |
-| `graceful-restart.js` | 服务端优雅下线：重启时客户端收到 `server_shutdown`（而不是被无声掐断）、按 `retryAfterMs` 重连、重启后房间与计数归零 | 能 ssh 到服务器并 `systemctl restart` | 否 |
+| `graceful-restart.js` | 服务端优雅下线：重启时客户端收到 `server_shutdown`（而不是被无声掐断）、按 `retryAfterMs` 重连、重启后房间与计数归零；加 `--hard` 改成 `SIGKILL`（模拟 OOM），断言客户端**收不到**通知、靠退避 10 秒内自愈 | 能 ssh 到服务器并 `systemctl restart` / `systemctl kill` | 否 |
+
+> 故障演练类脚本里，备份恢复与数据库停机在 `tools/ops/`（`restore-drill.sh`、`pg-outage-drill.js`），
+> 它们要能操作 PostgreSQL；长稳采样器 `tools/ops/soak-sample.sh` 也在那里。
 
 三者互补，不能互相替代：`ws-smoke` 通过只说明信令状态机对，`browser-e2e` 才说明媒体真的流起来了。
 历史上「远端画面全黑但页面显示通话中」这个 bug 就是 `browser-e2e` 抓出来的，前两层全绿。
@@ -41,6 +44,10 @@ node tools/e2e/browser-e2e.js 192.168.220.128 --relay
 # 5) 优雅下线：重启服务端，看客户端有没有被"好好送走"
 SSH_KEY=~/.ssh/vmkey SSH_USER=andres SSH_HOST=192.168.220.128 SSH_PASSWORD='***' \
   node tools/e2e/graceful-restart.js 192.168.220.128 8888
+
+# 5b) 强杀：进程来不及做任何事（模拟 OOM），客户端必须自己恢复
+SSH_KEY=~/.ssh/vmkey SSH_USER=andres SSH_HOST=192.168.220.128 SSH_PASSWORD='***' \
+  node tools/e2e/graceful-restart.js 192.168.220.128 8888 --hard
 ```
 
 `graceful-restart.js` 会用 ssh 在服务器上执行 `systemctl restart webrtc-signaling`，所以要么给
@@ -48,6 +55,10 @@ SSH_KEY=~/.ssh/vmkey SSH_USER=andres SSH_HOST=192.168.220.128 SSH_PASSWORD='***'
 `RESTART_CMD='systemctl restart webrtc-signaling'` 在服务器本机跑。断言清单：重启前双方已在通话中 →
 收到 `server_shutdown` 且带 `reason=restart`、`retryAfterMs>=1000` → 连接被关闭 → 按 `retryAfterMs`
 重连成功 → `/stats` 里 `uptimeSeconds` 归零、`rooms.total === 0`。
+
+`--hard`（或 `RESTART_MODE=hard`）把远端命令换成 `systemctl kill -s SIGKILL webrtc-signaling`，
+断言反过来：**收不到** `server_shutdown`、连接被内核断开、靠指数退避在 10 秒内重连成功。
+两条路径必须分开测——优雅下线证明"我们主动做对了"，SIGKILL 证明"即使保护全失效，用户也能自愈"。
 
 ### `--relay` 是怎么强制中继的
 

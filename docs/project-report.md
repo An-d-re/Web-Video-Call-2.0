@@ -19,11 +19,13 @@ P2P 打不通时由自建 TURN 服务器中继。支持一对一到多人、从�
 
 **当前状态**：v1.0 已在一台 Ubuntu 24.04 虚拟机上完成**全链路部署并逐层验证**——nginx（HTTPS/WSS）+ Go 认证服务（PostgreSQL）
 + 自研 C++ 信令，含 perfect negotiation、ICE 自动恢复、断线重连、半开连接回收。
-四层测试全绿：信令协议 33/33、全栈接线 34/34、真实浏览器通话 57/57（强制中继 62/62）、优雅下线 6/6。
+七层验证全绿：信令协议 36/36、全栈接线 34/34、真实浏览器通话 57/57（强制中继 62/62）、优雅下线 6/6、
+强杀恢复 5/5、数据库停机 9/9、备份恢复四表行数一致。
 TURN 由 `deploy/install.sh` 随部署一起装好（coturn，`use-auth-secret` + 每次通话现签临时凭据），
 并已用 `browser-e2e --relay` 证明媒体确实经中继转发。
-信令内置只读 `/stats` 指标接口，压测基线已测出：**2000 连接 / 1000 房间下转发 P95 0.1 ms、CPU 7%**
+信令内置只读 `/stats`（JSON）与 `/metrics`（Prometheus），Prometheus 自动抓取；压测基线已测出：**2000 连接 / 1000 房间下转发 P95 0.1 ms、CPU 7%**
 （优化前是 0.5 ms / 15%；前后对比与完整数据见 `docs/loadtest-report.md`）。
+运维侧有 15 类故障的判断/处置手册（`docs/runbook.md`）与四次演练记录（`docs/ops-drills.md`）。
 
 
 **下一阶段目标**：把一对一扩展为"多人自由开关视频"的房间，并让系统具备**可测量**的
@@ -251,7 +253,7 @@ A                            signaling                        B
 | G3 | Token 鉴权 | 🔨 | P0 | HMAC/JWT 签发 `roomToken`，SFU 独立验签 |
 | G4 | 座位接管 | 🔨 | P0 | `reconnectToken` 让断线客户端在新节点抢回座位 |
 | G5 | 优雅下线 | 🟡 单机版已做 | P0 | SIGTERM → 广播 `server_shutdown` + `retryAfterMs` → 关闭 → 客户端按提示重连（`graceful-restart.js` 6/6）；集群版还差"拒绝新入房 → 客户端换节点" |
-| G6 | 可观测性 | 🔨 | P0 | `/healthz` `/readyz` `/metrics` + Prometheus + Grafana；单机已有只读 `/stats` |
+| G6 | 可观测性 | 🟡 单机版已做 | P0 | 已导出 `/metrics`（Prometheus 文本）+ 只读 `/stats`（JSON），装了 Prometheus 每 15 秒抓取、保留 7 天；仍缺 Grafana 大屏与告警推送 |
 | G7 | 背压与限流 | 🟡 单机版已做 | P0 | 已有 256 KiB 发送缓冲水位（断开慢客户端）与每连接 60 条/秒令牌桶；"丢 ICE 候选"这类降级、每 IP 限流、慢客户端实测仍待做 |
 
 | G8 | SFU 故障重分配 | 🔨 | P1 | 节点挂掉后房间重新调度，客户端重新发布 |
@@ -405,11 +407,15 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 |---|---|
 | C++ 信令编译 | `-Wall` 下 **0 告警**；`server` 153 KB、`jwt_selftest` 38 KB |
 | JWT 跨语言一致性 | `./jwt_selftest tests/jwt_vectors.json` **11/11**（C++ 验 Go 签的令牌） |
-| 信令协议状态机 | `tools/e2e/ws-smoke.js` **33/33**（鉴权超时、凭证类型隔离、座位上限、转发、`bye` 释放座位、TURN 临时凭据按用户签发、`/stats` 鉴权与结构、单连接限流、聊天转发与按字符截断） |
+| 信令协议状态机 | `tools/e2e/ws-smoke.js` **36/36**（鉴权超时、凭证类型隔离、座位上限、转发、`bye` 释放座位、TURN 临时凭据按用户签发、`/stats` 与 `/metrics` 鉴权及结构、单连接限流、聊天转发与按字符截断） |
 | 全栈接线 | `tools/e2e/e2e-fullstack.js` **34/34**（nginx 反代 + Go + PostgreSQL + wss 升级 + 建房/密码/解散） |
 | 真实浏览器通话 | `tools/e2e/browser-e2e.js` **57/57**（Edge 157 + 假摄像头：ICE connected、双向画面、屏幕共享切换、质量面板、聊天收发与 XSS 转义、设备热切换不重协商、390×844 手机布局、挂断 bye 走通） |
 | TURN 中继 | `browser-e2e.js --relay` **62/62**：强制 `iceTransportPolicy: 'relay'`，两端选中的 `candidate-pair` 都是 `relay` 候选，画面与声音正常；错误凭据 `Cannot complete Allocation` 被拒 |
 | 优雅下线 | `tools/e2e/graceful-restart.js` **6/6**：`systemctl restart` 时在线客户端收到 `server_shutdown`（带 `retryAfterMs`），按提示重连成功，重启后房间与计数归零 |
+| 进程被强杀 | `graceful-restart.js --hard` **5/5**：`SIGKILL` 模拟 OOM，客户端收不到任何通知，靠指数退避 **2.1 秒**重连成功，重启后房间归零 |
+| 数据库停机 | `tools/ops/pg-outage-drill.js` **9/9**：停 PG 期间通话不断、信令照常转发、`/api/health` 返回 503 `db=down`、登录 5xx 不假装成功；恢复后写路径回归、原连接全程没掉线 |
+| 备份可用性 | `tools/ops/restore-drill.sh` 通过：最新 dump 恢复到临时库，`users/rooms/room_members/auth_tokens` 四表行数完全一致（83/35/69/170） |
+| 监控 | `/metrics` 通过 `promtool check metrics`；Prometheus 两个 target `up`，`webrtc_connections` 可查询；监听地址收回 `127.0.0.1:9090` |
 | 媒体路径 | 同网段 P2P 直连（`host` 候选即打通）；跨网段走 coturn（`use-auth-secret` + 每次通话现签凭据，TTL 7200 秒） |
 | 压测基线（优化前） | 2000 连接 / 1000 房间：服务端转发 P95 **0.5 ms**、入房 P95 **1 ms**、CPU **15%**、RSS 32 MB、fd 2022（=连接数+22，无泄漏）；同参数两轮 P50/P95/P99 完全一致 |
 | 压测基线（优化后） | 同参数重跑：转发 P95 **0.1 ms（−80%）**、P99 **0.25 ms（−90%）**、MAX 17 ms→4.5 ms、CPU 7%、RSS 32 MB、错误 0。详见 `docs/loadtest-report.md` 6.5 节 |
@@ -420,8 +426,9 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 | 项 | 现状 |
 |---|---|
 | 并发上限 | 已测到 2000 连接（客户端单进程先成为瓶颈）；多进程压测客户端后可继续上探，单机安全区按 2000~4000 连接规划 |
-| 可观测性 | 已有只读 `/stats`（连接/房间/消息/错误计数 + 延迟分位 + RSS/fd，需 `STATS_TOKEN`，不经 nginx）；尚无 Prometheus 导出与告警（**待补**） |
-| 故障恢复 | 客户端重连 + 半开连接回收已实现；无节点级故障演练（**待补**） |
+| 长稳 | **还没跑 1 小时**（只有 30~60 秒的压测窗口），慢泄漏未被证明不存在；判据与采样脚本已就绪（`tools/ops/soak-sample.sh`） |
+| 可观测性 | 已有 `/metrics`（Prometheus 文本，按规范的 `_seconds`/`_bytes` 基本单位）+ `/stats`（JSON），Prometheus 每 15 秒抓取、保留 7 天、只听 loopback；**仍缺** Grafana 大屏、告警推送、日志集中 |
+| 故障恢复 | 已有三次演练（备份恢复、`SIGKILL`、数据库停机），爆炸半径已量化；**仍缺**机器级故障（整机宕机）与多实例切换——单实例部署，机器没了就是全挂 |
 | 已知性能隐患 | **7 个全局 map + 7 把互斥锁**（clients / auth / rooms / bye / frame_buffers / raw_buffer / heartbeat，其中身份表已分 16 片）；房间查找已改为 `conn → roomId` 索引（转发 P99 2.5 ms→0.25 ms）；`conn->send()` 已有 256 KiB 背压判定与 60 条/秒限流，但**慢客户端还没实测触发过**；payload 日志已默认关闭（`LOG_PAYLOAD=1` 打开） |
 
 
@@ -431,8 +438,8 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 
 | 阶段 | 内容 | 工作量 | 交付物（可写进简历/汇报） |
 |---|---|---|---|
-| **M0 收尾 v1.0** ✅ | 提交代码 + 打 tag；TURN 临时凭据已实现并实测；补 v1 的压测基线 | 1~2 天 | 可演示的一对一通话 + 基线数据（**代码/部署/四层验证/压测基线全部完成**） |
-| **M1 单机健壮性** 🔨 | `/healthz` `/readyz` `/metrics`；SIGTERM 优雅下线；背压水位线；限流；`conn→roomId` 索引；房间表 64 分片锁 | **2~4 天** | "接入 Prometheus 监控；全局锁改分片锁，1 万房间下转发 p99 从 __ ms 降至 __ ms"（**优雅下线/背压判定/限流/索引已完成，三件事有 e2e 与压测数据；Prometheus 导出未做**） |
+| **M0 收尾 v1.0** ✅ | 提交代码 + 打 tag；TURN 临时凭据已实现并实测；补 v1 的压测基线 | 1~2 天 | 可演示的一对一通话 + 基线数据（**代码/部署/七层验证/压测基线全部完成**） |
+| **M1 单机健壮性** ✅ | `/metrics` + Prometheus；SIGTERM 优雅下线；背压水位线；限流；`conn→roomId` 索引；身份表 16 分片；每日备份 + 演练 | **2~4 天** | "接入 Prometheus 监控；给房间加索引后转发 p99 2.5 ms→0.25 ms；`kill -9` 后客户端 2.1 秒自愈"（**全部完成，1 小时长稳待跑**） |
 
 | **M2 多人通话** | 花名册 + 宫格 UI + 渲染虚拟化；接入 mediasoup；自由开关视频（producer pause）；可见性订阅 + Simulcast | 3~5 周 | "扩展为多人 SFU 架构，100 人房间出口带宽从最坏 __ Gbps 降至 __ Mbps" |
 | **M3 规模化与高可用** ⭐ | 信令无状态化 + Redis；房间→SFU 调度器；水位线准入；token 鉴权；座位接管；SFU 故障重分配；故障演练 | 3~4 周 | **核心产出**："N 节点集群，kill -9 后 __ 个房间 __ 秒内恢复，成功率 __%" |
@@ -486,6 +493,9 @@ SFU 转发单路 720p  ≈ 1.5~2.5 Mbps、500~1000 pps、单核 2%~5%
 | `CONTEXT.md` | 领域词汇表（房间、发起方/响应方、设备三态、挂断、重协商…） |
 | `docs/ha-scaling-design.md` | **详细设计**：分布式化、Pub/Sub 路由、座位接管、优雅下线、背压、容量模型、压测与故障演练四张表 |
 | `docs/multiparty-sfu-design.md` | **详细设计**：Mesh→SFU 论证、扇出控制、房间调度器、直播分层、渲染虚拟化、E2EE 信任边界 |
+| `docs/loadtest-report.md` | **压测报告**：零基础（看哪些参数、用什么工具）+ 四组场景数据 + 三个发现 + 容量推算 + 手把手复现 |
+| `docs/runbook.md` | **运维手册**：系统全貌、日常操作、15 类故障判断与处置、发布回滚、证书、容量 |
+| `docs/ops-drills.md` | **演练记录**：备份恢复、优雅下线、`SIGKILL`、数据库停机四次演练的实测数据与结论 |
 | `docs/project-report.md` | 本文档（主文档） |
 
 ### 11.2 术语表（详见 `CONTEXT.md`）

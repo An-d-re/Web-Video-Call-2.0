@@ -33,6 +33,7 @@
 | `tools/dev-gateway/` | 本地开发网关（静态托管 + `/api` 反代 + 假信令），仅本地用 |
 | `tools/e2e/` | 三层端到端测试：信令协议冒烟、全栈接线、真实浏览器通话（说明见 `tools/e2e/README.md`） |
 | `tools/load/` | 压测客户端：走真实业务路径的信令压测 + 服务端 `/stats` 采样（说明见 `tools/load/README.md`） |
+| `tools/ops/` | 运维演练：备份恢复校验、数据库停机演练、长稳采样器 |
 | `auth/` | 认证服务（Go + PostgreSQL）：注册/登录/刷新/登出 |
 | `db/` | 数据库迁移脚本 |
 | `static/index.html` | 前端单页（内联 CSS/JS），含 WebRTC 协商、房间 UI |
@@ -49,6 +50,8 @@
 | `docs/multiparty-sfu-design.md` | 详细设计：多人通话 / 直播（Mesh→SFU、房间调度、扇出控制、直播分层） |
 | `docs/demo-script.md` | **演示脚本**：答辩/汇报用的 8 分钟流程 + 兜底预案 + 加分材料 |
 | `docs/loadtest-report.md` | **压测报告**：零基础入门（看哪些参数、用什么工具、怎么做）+ 四组场景数据、Nagle 40ms 等三个发现、容量推算 + 手把手复现 |
+| `docs/runbook.md` | **运维手册**：系统全貌、日常操作、15 类故障的「怎么判断→怎么处置」、发布与回滚、证书、容量 |
+| `docs/ops-drills.md` | **演练记录**：备份恢复、优雅下线、SIGKILL、数据库停机四次演练的实测结果 |
 
 ## 依赖
 
@@ -408,11 +411,14 @@ node tools/e2e/e2e-fullstack.js <IP>          # 34 项接线检查
 
 | 命令 | 检查什么 | 上次实测 |
 |---|---|---|
-| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + 聊天转发与截断 + `/stats` 鉴权与结构 + 限流（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 33/33 |
+| `node tools/e2e/ws-smoke.js <IP> 8888` | 信令协议状态机 + TURN 凭据签发 + 聊天转发与截断 + `/stats` `/metrics` 鉴权与结构 + 限流（需与服务端相同的 `JWT_SECRET`，`STATS_TOKEN` 可选） | 36/36 |
 | `node tools/e2e/e2e-fullstack.js <IP>` | nginx 反代 + Go 认证 + PostgreSQL + wss 升级 | 34/34 |
 | `node tools/e2e/browser-e2e.js <IP>` | 真实浏览器里的 getUserMedia、SDP/ICE、远端画面、屏幕共享、质量面板、聊天、设备切换、手机布局、挂断 | 57/57（P2P） |
 | `node tools/e2e/browser-e2e.js <IP> --relay` | 同上，但强制 `iceTransportPolicy: 'relay'`，媒体必须经 TURN | 62/62 |
 | `node tools/e2e/graceful-restart.js <IP> 8888` | 重启服务端时客户端收到 `server_shutdown`、按提示重连、状态归零 | 6/6 |
+| `node tools/e2e/graceful-restart.js <IP> 8888 --hard` | 用 `SIGKILL` 模拟 OOM：客户端收不到通知，靠退避在 10 秒内恢复 | 5/5 |
+| `node tools/ops/pg-outage-drill.js <IP> 8888` | 数据库停机期间通话不断、`/api/health` 报 503、恢复后写路径回归 | 9/9 |
+| `bash tools/ops/restore-drill.sh <IP>` | 把最新备份恢复到临时库并比对行数（不碰生产库） | 4 张表一致 |
 
 
 `browser-e2e` 跑在**任何一台能访问该 IP 的机器**上，用 Chromium 内核浏览器 + 假摄像头（`--use-fake-device-for-media-stream`），不会真开本地摄像头。
@@ -431,6 +437,25 @@ curl -s "http://127.0.0.1:8888/stats?token=<STATS_TOKEN>&reset=1"   # 清窗口�
 
 返回连接数、房间数、按类型分组的消息/错误计数、`join_room` 与转发的延迟分位（微秒）、RSS 与 fd 数。
 其中 `errors.rate_limited` / `errors.slow_client` 不为 0 时，说明有客户端在刷消息或读得太慢被断开过。
+
+同一个进程还提供 Prometheus 格式的 `/metrics`（同样的鉴权，**没有 reset**——counter 必须是单调的）：
+
+```bash
+curl -s "http://127.0.0.1:8888/metrics?token=<STATS_TOKEN>" | head -20
+promtool check metrics < /tmp/metrics.txt      # 指标命名/类型不符合 Prometheus 规范会报错
+```
+
+指标名遵循 Prometheus 约定（基本单位 + 无 `quantile` 标签）：
+`webrtc_connections{state}`、`webrtc_rooms{state}`、`webrtc_room_members`、`webrtc_messages_total{type}`、
+`webrtc_errors_total{code}`、`webrtc_latency_seconds{path,stat}`、`webrtc_latency_seconds_max{path}`、
+`webrtc_latency_samples{path}`、`webrtc_resident_memory_bytes`、`webrtc_open_fds`、`webrtc_uptime_seconds`。
+
+`install.sh` 会顺带装一个 Prometheus（`--no-metrics` 可关），只监听 `127.0.0.1:9090`（它的 `/graph` 没有鉴权，不该出现在局域网里）：
+
+```bash
+curl -s 'http://127.0.0.1:9090/api/v1/targets' | python3 -m json.tool | grep -E 'health|job'
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=webrtc_connections'
+```
 
 压测工具 `tools/load/loadtest.js` 只走真实业务路径（auth → join_room → offer/answer → ICE → bye），
 支持 `--mode signaling`（只压 C++）与 `--mode fullstack`（走 nginx + Go + PG）：
@@ -462,6 +487,29 @@ node tools/load/loadtest.js --host <IP> --mode signaling \
 - **优雅下线**：收到 `SIGTERM`/`SIGINT`（`systemctl restart/stop` 就是发它）时，先给所有在线连接广播
   `{"type":"server_shutdown","retryAfterMs":3000}`，等 200 ms 让字节真正发出去再关闭。前端收到后显示
   「服务器正在重启，稍后自动重连…」，并按 `retryAfterMs` 重连（不走指数退避，因为服务端几秒就回来）。
+
+### 运维：监控、备份、演练
+
+日常操作与 15 类故障的判断/处置写在 **[`docs/runbook.md`](docs/runbook.md)**；四次演练的实测结果写在 **[`docs/ops-drills.md`](docs/ops-drills.md)**。这里只列最常用的几条：
+
+```bash
+# 健康
+systemctl is-active nginx webrtc-signaling webrtc-auth postgresql coturn prometheus
+curl -sk https://127.0.0.1/api/health          # {"db":"ok","status":"ok"}
+
+# 备份（install.sh 会装好 timer，每天 03:15 自动跑，保留 7 天）
+sudo systemctl start webrtc-backup.service
+sudo ls -lht /var/backups/webrtc/ | head
+systemctl list-timers webrtc-backup.timer
+
+# 备份到底能不能用——恢复到临时库比对行数，不动生产库
+bash tools/ops/restore-drill.sh <IP>
+
+# 长稳采样（每 30 秒采一次 /metrics 写 CSV，时长与间隔可传）
+STATS_TOKEN=<token> bash tools/ops/soak-sample.sh 127.0.0.1 8888 3600 30
+```
+
+**这套架构的故障半径**（有演练数据支撑）：数据库挂了 → 通话不断，只有登录/建房失败；信令进程被 `kill -9` → 客户端 2~3 秒内自动重连；正常 `systemctl restart` → 客户端收到明确通知后重连。**单点**只剩这台机器本身：没有多实例、没有主备，挂了就全挂（扩展方案见 `docs/ha-scaling-design.md`）。
 
 
 ## 信令协议
@@ -564,6 +612,12 @@ WebSocket 文本帧，JSON，字段 `type` 区分。服务端对 `offer`/`answer
 - 静态文件由 C++ 服务和 nginx 各实现了一套，生产上只用 nginx，C++ 那套属于冗余。
 - 房间查找已改为 `conn → roomId` 索引（压测转发 P99 2.5 ms→0.25 ms），但**房间列表本身仍是单 map 单锁**，
   万房间规模下 `list_rooms` 会成为新的扫描点；`setThreadNum(4)` 在 2 vCPU 机器上也没复测过。
+- **单实例部署，没有主备**：这台机器挂掉就整体不可用。数据库/进程级故障的爆炸半径已演练并且很小
+  （见 `docs/ops-drills.md`），但"机器没了"只能靠重新部署 + 恢复备份，RTO 在分钟级。
+- **1 小时长稳还没跑**：目前只有分钟级的压测数据（2000 连接 / 30~60 秒），慢泄漏（每小时几 MB）这类问题
+  还没被证明不存在；长稳的判据与脚本已就绪（`tools/ops/soak-sample.sh`），等一个干净时间窗执行。
+- **Prometheus 只在虚机本机可访问**（`127.0.0.1:9090`），没有 Grafana 大屏、没有告警推送：
+  现在看监控要么 ssh 端口转发，要么 `curl` 它的 HTTP API。
 
 ## 安全注意事项
 
