@@ -291,6 +291,10 @@ async function loginFlow(cdp, user, pass, displayName) {
     await loginFlow(pb, uB, PASS, '鲍勃');
     ok('B 注册并登录后进入主页', /(^\/$|index\.html$)/.test(await pb.evaluate('location.pathname')));
 
+    // Auth.user 是页面加载后异步拉 /api/me 才填上的，登录跳转刚完成时可能还是 null，
+    // 所以要等它出现再断言（直接读会偶发失败——这就是之前一次 56/57 的原因）。
+    await waitFor(pa, '!!(window.Auth && Auth.user && Auth.user.username)', 10000, 'A 页面的 Auth.user');
+    await waitFor(pb, '!!(window.Auth && Auth.user && Auth.user.username)', 10000, 'B 页面的 Auth.user');
     const userA = await pa.evaluate('Auth && Auth.user && Auth.user.username');
     const userB = await pb.evaluate('Auth && Auth.user && Auth.user.username');
     ok('页面里 Auth.user 是当前账号', userA === uA && userB === uB, { userA, userB });

@@ -34,6 +34,9 @@ const HOST = process.argv[2] || '127.0.0.1';
 const PORT = Number(process.argv[3] || 8888);
 const SECRET = process.env.JWT_SECRET || 'dev-secret-at-least-32-bytes-long-0001';
 const STATS_TOKEN = process.env.STATS_TOKEN || '';
+// --hard：不发 SIGTERM 而是直接 SIGKILL，模拟 OOM / 断电这种"进程没机会告别"的情况。
+// 这条路径证明的是"优雅下线是锦上添花，不是唯一活路"：真被 kill -9 了也能自愈。
+const HARD = process.argv.includes('--hard') || process.env.RESTART_MODE === 'hard';
 
 let pass = 0, fail = 0, skipped = 0;
 function ok(name, cond, extra) {
@@ -133,7 +136,10 @@ function restartServer() {
   if (!key || !pw) {
     throw new Error('需要 RESTART_CMD，或同时提供 SSH_KEY + SSH_PASSWORD（见文件头用法）');
   }
-  const remote = `echo '${pw}' | sudo -S -p '' systemctl restart webrtc-signaling`;
+  const remote = HARD
+    // 只发信号不重启：靠 unit 里的 Restart=always 把它拉起来，这正是被 OOM kill 的路径
+    ? `echo '${pw}' | sudo -S -p '' systemctl kill -s SIGKILL webrtc-signaling`
+    : `echo '${pw}' | sudo -S -p '' systemctl restart webrtc-signaling`;
   execSync(
     `ssh -i "${key}" -o StrictHostKeyChecking=accept-new ${user}@${sshHost} "${remote}"`,
     { stdio: 'inherit' }
@@ -166,7 +172,9 @@ function restartServer() {
   ok('重启前双方已在通话中（收到 start_call）', !!s1, s1);
 
   // 2. 重启服务端，等 server_shutdown
-  console.log('==> 重启服务端（systemctl restart webrtc-signaling）');
+  console.log(HARD
+    ? '==> 直接 SIGKILL 服务端（模拟 OOM，进程不会有机会告别）'
+    : '==> 重启服务端（systemctl restart webrtc-signaling）');
   try {
     restartServer();
   } catch (e) {
@@ -174,22 +182,29 @@ function restartServer() {
     process.exit(2);
   }
 
-  const sd1 = await alice.wait(isType('server_shutdown'), 12000, true);
-  const sd2 = await bob.wait(isType('server_shutdown'), 12000, true);
-  ok('重启时客户端收到 server_shutdown（而不是被无声掐断）', !!sd1 && !!sd2, { alice: sd1, bob: sd2 });
-  ok('server_shutdown 带 reason=restart 与 retryAfterMs',
-    !!sd1 && sd1.reason === 'restart' && Number(sd1.retryAfterMs) >= 1000,
-    sd1);
+  const sd1 = await alice.wait(isType('server_shutdown'), HARD ? 4000 : 12000, true);
+  const sd2 = await bob.wait(isType('server_shutdown'), HARD ? 4000 : 12000, true);
+  if (HARD) {
+    ok('SIGKILL 时客户端收不到 server_shutdown（进程没机会发）', !sd1 && !sd2,
+      { alice: sd1, bob: sd2 });
+  } else {
+    ok('重启时客户端收到 server_shutdown（而不是被无声掐断）', !!sd1 && !!sd2, { alice: sd1, bob: sd2 });
+    ok('server_shutdown 带 reason=restart 与 retryAfterMs',
+      !!sd1 && sd1.reason === 'restart' && Number(sd1.retryAfterMs) >= 1000,
+      sd1);
+  }
 
-  // 3. 连接应被关闭
+  // 3. 连接应被关闭（优雅路径是发完通知主动关；SIGKILL 是内核直接断）
   await sleep(1200);
-  ok('收到通知后连接被关闭', alice.closed === true && bob.closed === true,
+  ok(HARD ? 'SIGKILL 后连接被内核断开' : '收到通知后连接被关闭',
+    alice.closed === true && bob.closed === true,
     { alice: alice.closed, bob: bob.closed });
 
   const waitMs = (sd1 && Number(sd1.retryAfterMs)) || 3000;
 
-  // 4. 按服务端建议的延迟重连
-  await sleep(waitMs + 500);
+  // 4. 重连：优雅重启按服务端给的延迟；被 SIGKILL 时它没能告诉我们，靠前端指数退避
+  const waitStart = Date.now();
+  if (!HARD) await sleep(waitMs + 500);
   let reconnected = false;
   for (let i = 0; i < 20 && !reconnected; i++) {
     const probe = new Client('probe');
@@ -208,7 +223,13 @@ function restartServer() {
       await sleep(500);
     }
   }
-  ok(`按 retryAfterMs=${waitMs} 重连成功`, reconnected);
+  const reconnectMs = Date.now() - waitStart;
+  if (HARD) {
+    ok('SIGKILL 后靠退避重连成功（≤10 秒，不依赖服务端通知）',
+      reconnected && reconnectMs <= 10000, { reconnectMs });
+  } else {
+    ok(`按 retryAfterMs=${waitMs} 重连成功`, reconnected, { reconnectMs });
+  }
 
   // 5. 进程确实重启了：uptime 很小，且没有残留房间
   if (!STATS_TOKEN) {

@@ -311,6 +311,37 @@ function get(p) {
     ok('/stats 里记到了 rate_limited', !!j && j.errors.rate_limited >= 1, j && j.errors);
   }
 
+  // 19. /metrics 给 Prometheus 抓的文本接口，鉴权规则与 /stats 相同
+  const mx1 = await get('/metrics');
+  ok('/metrics 不带 token -> 403', mx1.status === 403, { status: mx1.status });
+
+  if (!statsToken) {
+    skip('/metrics 带 token 返回 Prometheus 文本', '未设置 STATS_TOKEN，跳过');
+    skip('/metrics 的数值与 /stats 对得上', '未设置 STATS_TOKEN，跳过');
+  } else {
+    const mx2 = await get('/metrics?token=' + encodeURIComponent(statsToken));
+    const text = mx2.body || '';
+    const ctype = String(mx2.headers && mx2.headers['content-type']);
+    // 三个必须具备的东西：200、text/plain 的 exposition 格式、TYPE 声明
+    const hasType = /# TYPE webrtc_connections gauge/.test(text)
+      && /# TYPE webrtc_messages_total counter/.test(text);
+    const hasSeries = /^webrtc_connections\{state="ws"\} \d+$/m.test(text)
+      && /^webrtc_errors_total\{code="rate_limited"\} \d+$/m.test(text);
+    ok('/metrics 带 token 返回 Prometheus 文本',
+      mx2.status === 200 && /text\/plain/.test(ctype) && /version=0\.0\.4/.test(ctype) && hasType && hasSeries,
+      { status: mx2.status, ctype, hasType, hasSeries, head: text.slice(0, 90) });
+
+    // 同一个进程的同一时刻，两条出口的读数应该一致：不一致说明有一边算错了
+    const wsLine = /^webrtc_connections\{state="ws"\} (\d+)$/m.exec(text);
+    const st3 = await get('/stats?token=' + encodeURIComponent(statsToken));
+    let j3 = null;
+    try { j3 = JSON.parse(st3.body); } catch (e) { /* 保持 null */ }
+    ok('/metrics 的数值与 /stats 对得上',
+      !!wsLine && !!j3 && Number(wsLine[1]) === j3.connections.ws,
+      { fromMetrics: wsLine ? Number(wsLine[1]) : null, fromStats: j3 ? j3.connections.ws : null });
+  }
+
+
   [bad, confused, sneak, alice, bob, carol, mute, flood].forEach((c) => c.close());
 
   console.log(`\n合计: ${pass} 通过, ${fail} 失败${skipped ? ', ' + skipped + ' 跳过' : ''}`);
