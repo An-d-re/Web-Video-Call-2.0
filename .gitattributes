@@ -1,3 +1,13 @@
 # 统一按文本处理，避免 shell 脚本被检出为 CRLF 后在 Linux 上无法执行
 # （CRLF 的 bash 脚本会报 "bad interpreter: /bin/bash^M"）
 *.sh text eol=lf
+
+# systemd unit 与 prometheus 配置同样是 Linux 专用文本文件：
+# unit 文件里混进 CRLF 会让 systemd 报 "Bad message" 或把 \r 当成参数的一部分。
+*.service text eol=lf
+*.timer text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# nginx 配置：CRLF 不会立刻坏，但会让 diff 全是噪声
+*.conf text eol=lf
